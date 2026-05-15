@@ -56,14 +56,24 @@ export async function importStandings(
   supabase: SupabaseClient,
   tournamentId: string,
   fileBuffer: ArrayBuffer,
+  pairingGroupId: string | null = null,
 ): Promise<ImportStandingsResult> {
   const rows = parseExcel(fileBuffer);
   if (rows.length === 0) return { matched: 0, unmatched: 0 };
 
-  const { data: tPlayers } = await supabase
+  // Scope player lookup to the group so initial_ranking is unambiguous.
+  // Each group has its own 1-N ranking; without scoping, rankings from
+  // different groups collide and map to the wrong player.
+  let playersQuery = supabase
     .from('tournament_players')
     .select('id, initial_ranking')
     .eq('tournament_id', tournamentId);
+
+  if (pairingGroupId) {
+    playersQuery = playersQuery.eq('pairing_group_id', pairingGroupId);
+  }
+
+  const { data: tPlayers } = await playersQuery;
 
   const byInitial = new Map(
     (tPlayers ?? []).map((tp) => [tp.initial_ranking as number, tp.id as string]),
@@ -110,15 +120,23 @@ export async function importStandings(
       .eq('id', tournament_player_id);
   }
 
-  // Close most recent ongoing round (mirrors the manual import behavior)
-  const { data: ongoing } = await supabase
+  // Close most recent ongoing round for this group (mirrors the manual import behavior).
+  // Scoping to the group prevents closing a round that belongs to a different group.
+  let ongoingQuery = supabase
     .from('rounds')
     .select('id')
     .eq('tournament_id', tournamentId)
     .eq('status', 'ongoing')
     .order('round_number', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .limit(1);
+
+  if (pairingGroupId) {
+    ongoingQuery = ongoingQuery.eq('pairing_group_id', pairingGroupId);
+  } else {
+    ongoingQuery = ongoingQuery.is('pairing_group_id', null);
+  }
+
+  const { data: ongoing } = await ongoingQuery.maybeSingle();
   if (ongoing) {
     await supabase.from('rounds').update({ status: 'finished' }).eq('id', ongoing.id);
   }

@@ -109,34 +109,57 @@ export async function importPairings(
   supabase: SupabaseClient,
   tournamentId: string,
   fileBuffer: ArrayBuffer,
+  pairingGroupId: string | null = null,
 ): Promise<ImportPairingsResult> {
   const { roundNumber, pairings } = parseExcel(fileBuffer);
   if (pairings.length === 0) {
     return { roundNumber, imported: 0, unmatched: 0 };
   }
 
-  // Round must already exist (manager creates rounds when starting tournament)
-  let { data: round } = await supabase
+  // Find or create round scoped to this pairing group.
+  // Each group has its own independent round 1, round 2, etc.
+  let roundQuery = supabase
     .from('rounds')
     .select('id, status')
     .eq('tournament_id', tournamentId)
-    .eq('round_number', roundNumber)
-    .maybeSingle();
+    .eq('round_number', roundNumber);
+
+  if (pairingGroupId) {
+    roundQuery = roundQuery.eq('pairing_group_id', pairingGroupId);
+  } else {
+    roundQuery = roundQuery.is('pairing_group_id', null);
+  }
+
+  let { data: round } = await roundQuery.maybeSingle();
 
   if (!round) {
     const { data: created } = await supabase
       .from('rounds')
-      .insert({ tournament_id: tournamentId, round_number: roundNumber, status: 'pending' })
+      .insert({
+        tournament_id: tournamentId,
+        round_number: roundNumber,
+        status: 'pending',
+        pairing_group_id: pairingGroupId ?? null,
+      })
       .select('id, status')
       .single();
     round = created;
   }
   if (!round) throw new Error(`Não foi possível resolver a rodada ${roundNumber}`);
 
-  const { data: tPlayers } = await supabase
+  // Build player lookup scoped to this group so that initial_ranking is unambiguous.
+  // Each group has its own ranking starting from 1 — without scoping we'd match
+  // the wrong player when two groups have the same ranking number.
+  let playersQuery = supabase
     .from('tournament_players')
     .select('id, initial_ranking')
     .eq('tournament_id', tournamentId);
+
+  if (pairingGroupId) {
+    playersQuery = playersQuery.eq('pairing_group_id', pairingGroupId);
+  }
+
+  const { data: tPlayers } = await playersQuery;
 
   const byInitial = new Map(
     (tPlayers ?? []).map((tp) => [tp.initial_ranking as number, tp.id as string]),
@@ -171,7 +194,7 @@ export async function importPairings(
     return { roundNumber, imported: 0, unmatched };
   }
 
-  // Replace pairings for this round
+  // Replace pairings for this round (idempotent re-run)
   await supabase.from('pairings').delete().eq('round_id', round.id);
   const { error } = await supabase.from('pairings').insert(toInsert);
   if (error) throw new Error(error.message);

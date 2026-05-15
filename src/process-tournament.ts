@@ -80,13 +80,16 @@ export async function processImport(
   const maxRound = extractMaxRound(standingsHtml);
 
   // 3. Pairings for each round (art=2)
+  // Use fetchExcelDirect so the SNode param is preserved — fetchExcelFromPage
+  // extracts the Excel link from the rendered HTML and that link drops SNode,
+  // which would mix pairings from all groups.
   let totalPairings = 0;
   let totalPairingsUnmatched = 0;
   for (let rd = 1; rd <= maxRound; rd++) {
     try {
       const pairingsUrl = buildArtUrl(info, 2, rd);
-      const buf = await fetchExcelFromPage(pairingsUrl);
-      const r = await importPairings(supabase, row.tournament_id, buf);
+      const buf = await fetchExcelDirect(pairingsUrl);
+      const r = await importPairings(supabase, row.tournament_id, buf, pairingGroupId);
       totalPairings += r.imported;
       totalPairingsUnmatched += r.unmatched;
     } catch (err) {
@@ -97,8 +100,9 @@ export async function processImport(
   }
 
   // 4. Standings (final ranking - art=1)
-  const standingsBuf = await fetchExcelFromPage(standingsPageUrl);
-  const standingsResult = await importStandings(supabase, row.tournament_id, standingsBuf);
+  // Also use fetchExcelDirect to keep SNode and get only this group's standings.
+  const standingsBuf = await fetchExcelDirect(standingsPageUrl);
+  const standingsResult = await importStandings(supabase, row.tournament_id, standingsBuf, pairingGroupId);
 
   // 5. Recalculate (uses pairings to derive Buchholz etc.;
   // overrides standings ranks within each pairing group)
