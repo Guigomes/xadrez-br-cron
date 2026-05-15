@@ -4,3 +4,4 @@ node_modules/
 inspect.ts
 migrate.ts
 fix-rls.ts
+gcp-sa-key.json

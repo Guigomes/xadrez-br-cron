@@ -1,0 +1,28 @@
+steps:
+  # 1. Build the Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - build
+      - '-t'
+      - 'southamerica-east1-docker.pkg.dev/torneios-xadrez/cron-import/cron-import:latest'
+      - '.'
+
+  # 2. Push to Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - push
+      - 'southamerica-east1-docker.pkg.dev/torneios-xadrez/cron-import/cron-import:latest'
+
+  # 3. Update the Cloud Run Job to use the new image
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - run
+      - jobs
+      - update
+      - xadrez-br-cron
+      - '--image=southamerica-east1-docker.pkg.dev/torneios-xadrez/cron-import/cron-import:latest'
+      - '--region=southamerica-east1'
+
+images:
+  - 'southamerica-east1-docker.pkg.dev/torneios-xadrez/cron-import/cron-import:latest'
