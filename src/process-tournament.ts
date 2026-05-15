@@ -109,7 +109,7 @@ export async function processImport(
   await supabase.rpc('recalculate_standings', { p_tournament_id: row.tournament_id });
 
   return [
-    `jogadores: ${playersResult.added}+${playersResult.reused} (criados ${playersResult.created})`,
+    `jogadores: ${playersResult.added}+${playersResult.reused} (criados ${playersResult.created}${playersResult.removed > 0 ? `, removidos ${playersResult.removed}` : ''})`,
     `rodadas 1..${maxRound}: ${totalPairings} pareamentos`,
     `classificação: ${standingsResult.matched} jogadores`,
   ].join(' · ');

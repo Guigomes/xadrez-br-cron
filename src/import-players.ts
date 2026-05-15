@@ -67,6 +67,7 @@ export interface ImportPlayersResult {
   created: number;
   skipped: number;
   failed: number;
+  removed: number;
 }
 
 export async function importPlayers(
@@ -87,14 +88,28 @@ export async function importPlayers(
 
   const participants = parseRows(rawRows);
   if (participants.length === 0) {
-    return { total: 0, added: 0, reused: 0, created: 0, skipped: 0, failed: 0 };
+    return { total: 0, added: 0, reused: 0, created: 0, skipped: 0, failed: 0, removed: 0 };
   }
 
-  const { data: existingTPs } = await supabase
+  // Fetch existing tournament_players scoped to this group so we can:
+  // (a) skip re-insert for already-linked players, and
+  // (b) remove players who are no longer in the Excel at the end.
+  let existingTPsQuery = supabase
     .from('tournament_players')
-    .select('player_id')
+    .select('id, player_id')
     .eq('tournament_id', tournamentId);
-  const existingPlayerIds = new Set((existingTPs ?? []).map((tp) => tp.player_id as string));
+  if (pairingGroupId) {
+    existingTPsQuery = existingTPsQuery.eq('pairing_group_id', pairingGroupId);
+  } else {
+    existingTPsQuery = existingTPsQuery.is('pairing_group_id', null);
+  }
+  const { data: existingTPs } = await existingTPsQuery;
+  // Map player_id → tp.id for quick lookup
+  const existingPlayerIds = new Map<string, string>(
+    (existingTPs ?? []).map((tp) => [tp.player_id as string, tp.id as string]),
+  );
+  // Track which player_ids appear in the current Excel so we can remove the rest
+  const seenPlayerIds = new Set<string>();
 
   const { data: categoryRows } = await supabase
     .from('tournament_categories')
@@ -209,9 +224,10 @@ export async function importPlayers(
         failed++;
         continue;
       }
+      seenPlayerIds.add(playerId);
+
       if (existingPlayerIds.has(playerId)) {
-        // Player already in tournament — always sync group, ranking and category
-        // so moves between pairing groups and re-seedings are reflected on re-run.
+        // Player already in this group — sync ranking and category in case they changed.
         await supabase
           .from('tournament_players')
           .update({
@@ -233,7 +249,7 @@ export async function importPlayers(
         pairing_group_id: pairingGroupId ?? null,
       });
 
-      existingPlayerIds.add(playerId);
+      existingPlayerIds.set(playerId, '');  // mark as known so duplicates in Excel are skipped
       added++;
     } catch (err) {
       const msg = String((err as Error)?.message ?? '');
@@ -242,5 +258,20 @@ export async function importPlayers(
     }
   }
 
-  return { total: participants.length, added, reused, created, skipped, failed };
+  // Remove players that were in this group before but are no longer in the Excel.
+  // This handles cases where participants leave or are moved to a different group.
+  let removed = 0;
+  const tpIdsToRemove = (existingTPs ?? [])
+    .filter((tp) => !seenPlayerIds.has(tp.player_id as string))
+    .map((tp) => tp.id as string);
+
+  if (tpIdsToRemove.length > 0) {
+    await supabase
+      .from('tournament_players')
+      .delete()
+      .in('id', tpIdsToRemove);
+    removed = tpIdsToRemove.length;
+  }
+
+  return { total: participants.length, added, reused, created, skipped, failed, removed };
 }
