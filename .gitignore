@@ -1,0 +1,6 @@
+node_modules/
+.env
+*.tmp.*
+inspect.ts
+migrate.ts
+fix-rls.ts
