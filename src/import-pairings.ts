@@ -244,8 +244,16 @@ export async function importPairings(
   const { error } = await supabase.from('pairings').insert(toInsert);
   if (error) throw new Error(error.message);
 
-  if (round.status === 'pending') {
-    await supabase.from('rounds').update({ status: 'ongoing' }).eq('id', round.id);
+  // Advance round status:
+  //   pending  → ongoing  when pairings are published but some games are still '*'
+  //   ongoing  → finished when every game has a final result (and there's at least one)
+  // recalculate_standings only counts pairings from rounds with status='finished',
+  // so leaving a round as 'ongoing' silently zeroes out its contribution to scores.
+  const hasResults = pairings.length > 0;
+  const allHaveResults = hasResults && pairings.every((p) => p.result !== '*');
+  const desired = allHaveResults ? 'finished' : 'ongoing';
+  if (round.status !== desired) {
+    await supabase.from('rounds').update({ status: desired }).eq('id', round.id);
   }
 
   return { roundNumber, imported: toInsert.length, unmatched };
