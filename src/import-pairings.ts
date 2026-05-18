@@ -1,12 +1,13 @@
 import * as XLSX from 'xlsx';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { normalize } from './normalize.js';
 
 type GameResult = '1-0' | '0-1' | '1/2-1/2' | '*' | 'bye';
 
 interface PairingRow {
   board: number;
-  whiteInitial: number;
-  blackInitial: number | null;
+  whiteName: string;
+  blackName: string | null;
   result: GameResult;
   whitePoints: number | null;
   blackPoints: number | null;
@@ -31,13 +32,33 @@ function parseResult(raw: unknown): {
   return { result: '*', whitePoints: null, blackPoints: null };
 }
 
+/**
+ * Normalize a player name from chess-results (which uses either
+ *   "Lastname, Firstname"  or  "Firstname Lastname, "  with trailing comma)
+ * into a canonical "Firstname Lastname" string, then lowercase + strip accents.
+ * Matches the same transformation done by import-players, so names from
+ * the players Excel and the pairings Excel produce the same key.
+ */
+function normalizePairingName(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return '';
+  const reassembled = trimmed.includes(',')
+    ? trimmed.split(',').map((s) => s.trim()).filter(Boolean).reverse().join(' ')
+    : trimmed;
+  return normalize(reassembled);
+}
+
 function parseExcel(buffer: ArrayBuffer): ParsedFile {
   const workbook = XLSX.read(buffer, { type: 'array' });
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
   const raw = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: null });
 
+  // The "X. Ronda" / "Round X" header sits below the tournament metadata block.
+  // In the Portuguese (lan=10) layout that block is ~13 rows tall, so 10 isn't
+  // enough — scan a generous range. Pairing data rows have numeric board ids
+  // in col 0 so they won't false-match the textual patterns below.
   let roundNumber = 0;
-  for (let i = 0; i < Math.min(10, raw.length); i++) {
+  for (let i = 0; i < Math.min(30, raw.length); i++) {
     const cell = String((raw[i] as unknown[])?.[0] ?? '').trim();
     const m =
       cell.match(/^(\d+)\.\s*Ronda/i) ??
@@ -50,13 +71,26 @@ function parseExcel(buffer: ArrayBuffer): ParsedFile {
   }
   if (!roundNumber) throw new Error('Número da rodada não encontrado.');
 
+  // Locate the column header row and capture the actual indexes — the layout
+  // varies (8 columns: board, white name, gr, pts, result, pts, black name, gr;
+  // sometimes more if ratings are enabled in chess-results).
   let dataStart = -1;
+  let whiteNameIdx = 1;
+  let resultIdx = -1;
+  let blackNameIdx = -1;
   for (let i = 0; i < raw.length; i++) {
     const row = raw[i] as unknown[];
-    if (row?.some((c) => String(c ?? '').trim() === 'Resultado')) {
-      dataStart = i + 1;
-      break;
-    }
+    if (!row) continue;
+    const cells = row.map((c) => String(c ?? '').trim());
+    const rIdx = cells.findIndex((c) => c === 'Resultado' || /^Result/i.test(c));
+    if (rIdx < 0) continue;
+    resultIdx = rIdx;
+    const wIdx = cells.findIndex((c) => c === 'White');
+    const bIdx = cells.findIndex((c) => c === 'Black');
+    if (wIdx >= 0) whiteNameIdx = wIdx;
+    blackNameIdx = bIdx >= 0 ? bIdx : rIdx + 2;
+    dataStart = i + 1;
+    break;
   }
   if (dataStart === -1) throw new Error('Coluna "Resultado" não encontrada.');
 
@@ -67,27 +101,35 @@ function parseExcel(buffer: ArrayBuffer): ParsedFile {
     const board = Number(row[0]);
     if (isNaN(board) || board <= 0) continue;
 
-    const whiteInitial = Number(row[1]);
-    const blackName = String(row[12] ?? '').trim().toLowerCase();
-    const isBye = blackName === 'não emparceirado' || row[17] == null;
-    const blackInitial = isBye ? null : Number(row[17]);
+    const whiteName = String(row[whiteNameIdx] ?? '').trim();
+    if (!whiteName) continue;
+
+    const rawBlack = String(row[blackNameIdx] ?? '').trim();
+    const blackLower = rawBlack.toLowerCase();
+    const isBye =
+      blackLower === 'bye' ||
+      blackLower === 'não emparceirado' ||
+      rawBlack === '';
 
     if (isBye) {
+      // Bye rows in the 8-col layout look like: [board, name, gr, 0, 1, null, "bye", null]
+      // — col[resultIdx] is the numeric point value (1 or 0.5), not "1 - 0".
+      const points = Number(row[resultIdx]);
       pairings.push({
         board,
-        whiteInitial,
-        blackInitial: null,
+        whiteName,
+        blackName: null,
         result: 'bye',
-        whitePoints: 1.0,
+        whitePoints: Number.isFinite(points) && points > 0 ? points : 1.0,
         blackPoints: null,
         isBye: true,
       });
     } else {
-      const { result, whitePoints, blackPoints } = parseResult(row[9]);
+      const { result, whitePoints, blackPoints } = parseResult(row[resultIdx]);
       pairings.push({
         board,
-        whiteInitial,
-        blackInitial,
+        whiteName,
+        blackName: rawBlack,
         result,
         whitePoints,
         blackPoints,
@@ -147,12 +189,12 @@ export async function importPairings(
   }
   if (!round) throw new Error(`Não foi possível resolver a rodada ${roundNumber}`);
 
-  // Build player lookup scoped to this group so that initial_ranking is unambiguous.
-  // Each group has its own ranking starting from 1 — without scoping we'd match
-  // the wrong player when two groups have the same ranking number.
+  // Build player lookup by normalized name scoped to this group. We match by
+  // name because the pairings Excel from chess-results does not expose the
+  // initial ranking column for tournaments configured without ratings.
   let playersQuery = supabase
     .from('tournament_players')
-    .select('id, initial_ranking')
+    .select('id, player:players(full_name)')
     .eq('tournament_id', tournamentId);
 
   if (pairingGroupId) {
@@ -161,21 +203,24 @@ export async function importPairings(
 
   const { data: tPlayers } = await playersQuery;
 
-  const byInitial = new Map(
-    (tPlayers ?? []).map((tp) => [tp.initial_ranking as number, tp.id as string]),
-  );
+  const byName = new Map<string, string>();
+  for (const tp of tPlayers ?? []) {
+    const fullName = ((tp.player as unknown) as { full_name?: string } | null)?.full_name ?? '';
+    const key = normalize(fullName);
+    if (key) byName.set(key, tp.id as string);
+  }
 
   const toInsert: Record<string, unknown>[] = [];
   let unmatched = 0;
 
   for (const p of pairings) {
-    const whiteTpId = byInitial.get(p.whiteInitial);
+    const whiteTpId = byName.get(normalizePairingName(p.whiteName));
     if (!whiteTpId) {
       unmatched++;
       continue;
     }
-    const blackTpId = p.blackInitial != null ? byInitial.get(p.blackInitial) : undefined;
-    if (!p.isBye && p.blackInitial != null && !blackTpId) unmatched++;
+    const blackTpId = p.blackName ? byName.get(normalizePairingName(p.blackName)) : undefined;
+    if (!p.isBye && p.blackName && !blackTpId) unmatched++;
 
     toInsert.push({
       tournament_id: tournamentId,
