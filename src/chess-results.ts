@@ -130,7 +130,9 @@ export async function fetchExcelDirect(pageUrl: string): Promise<ArrayBuffer> {
  * a reliable approximation of how many rounds have been published.
  */
 export function extractMaxRound(html: string): number {
-  const matches = html.matchAll(/[?&]rd=(\d+)/g);
+  // chess-results.com renders hrefs with HTML-encoded ampersands (&amp;rd=N),
+  // so the char before `rd=` is `;`, not `&`. Accept `?`, `&`, or `;`.
+  const matches = html.matchAll(/[?&;]rd=(\d+)/g);
   let max = 0;
   for (const m of matches) {
     const n = parseInt(m[1], 10);
