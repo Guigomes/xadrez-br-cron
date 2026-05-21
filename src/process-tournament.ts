@@ -108,14 +108,13 @@ export async function processImport(
     }
   }
 
-  // 4. Standings (final ranking - art=1)
-  // Also use fetchExcelDirect to keep SNode and get only this group's standings.
+  // 4. Recalculate from pairings first (Buchholz etc.) so that step 5 can override.
+  await supabase.rpc('recalculate_standings', { p_tournament_id: row.tournament_id });
+
+  // 5. Standings (final ranking - art=1): chess-results is the authoritative source
+  // for points and tiebreakers, so this runs AFTER recalculate to take precedence.
   const standingsBuf = await fetchExcelDirect(standingsPageUrl);
   const standingsResult = await importStandings(supabase, row.tournament_id, standingsBuf, pairingGroupId);
-
-  // 5. Recalculate (uses pairings to derive Buchholz etc.;
-  // overrides standings ranks within each pairing group)
-  await supabase.rpc('recalculate_standings', { p_tournament_id: row.tournament_id });
 
   return [
     `jogadores: ${playersResult.added}+${playersResult.reused} (criados ${playersResult.created}${playersResult.removed > 0 ? `, removidos ${playersResult.removed}` : ''})`,
