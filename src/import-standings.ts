@@ -16,18 +16,35 @@ function parseExcel(buffer: ArrayBuffer): StandingRow[] {
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
   const raw = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: null });
 
-  let dataStart = -1;
+  let headerIdx = -1;
+  let headerCells: string[] = [];
   for (let i = 0; i < raw.length; i++) {
     const row = raw[i] as unknown[];
     if (row?.some((cell) => String(cell ?? '').trim() === 'Nome')) {
-      dataStart = i + 1;
+      headerIdx = i;
+      headerCells = row.map((c) => String(c ?? '').trim());
       break;
     }
   }
-  if (dataStart === -1) throw new Error('Coluna "Nome" não encontrada.');
+  if (headerIdx === -1) throw new Error('Coluna "Nome" não encontrada.');
+
+  const col = (names: string[]) => {
+    const lower = names.map((n) => n.toLowerCase());
+    return headerCells.findIndex((h) => lower.includes(h.toLowerCase()));
+  };
+
+  const colNr = col(['Nr', 'Nº', 'No.', 'No']);
+  const colPts = col(['Pts.', 'Pts', 'Pontos', 'Punkte', 'Pnt']);
+  const tbCols = headerCells
+    .map((h, i) => ({ h, i }))
+    .filter(({ h }) => /^(Des\.?\s*\d+|TB\.?\s*\d+|Dp\.?\s*\d+)/i.test(h))
+    .sort((a, b) => a.i - b.i)
+    .map(({ i }) => i);
+
+  if (colPts === -1) throw new Error('Coluna de pontos não encontrada no cabeçalho.');
 
   const rows: StandingRow[] = [];
-  for (let i = dataStart; i < raw.length; i++) {
+  for (let i = headerIdx + 1; i < raw.length; i++) {
     const row = raw[i] as unknown[];
     if (!row || row[0] == null) continue;
     const rank = Number(row[0]);
@@ -35,12 +52,12 @@ function parseExcel(buffer: ArrayBuffer): StandingRow[] {
 
     rows.push({
       rank,
-      initialRanking: Number(row[1]) || 0,
+      initialRanking: colNr >= 0 ? Number(row[colNr]) || 0 : Number(row[1]) || 0,
       name: String(row[3] ?? '').trim(),
-      points: Number(row[9]) || 0,
-      buchholz: Number(row[10]) || 0,
-      buchholzCut1: Number(row[11]) || 0,
-      sonnebornBerger: Number(row[12]) || 0,
+      points: Number(row[colPts]) || 0,
+      buchholz: tbCols[0] !== undefined ? Number(row[tbCols[0]]) || 0 : 0,
+      buchholzCut1: tbCols[1] !== undefined ? Number(row[tbCols[1]]) || 0 : 0,
+      sonnebornBerger: tbCols[2] !== undefined ? Number(row[tbCols[2]]) || 0 : 0,
     });
   }
 
