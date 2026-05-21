@@ -11,10 +11,23 @@ interface StandingRow {
   sonnebornBerger: number;
 }
 
-function parseExcel(buffer: ArrayBuffer): StandingRow[] {
+interface ParsedExcel {
+  rows: StandingRow[];
+  completedRound: number | null;
+}
+
+function parseExcel(buffer: ArrayBuffer): ParsedExcel {
   const workbook = XLSX.read(buffer, { type: 'array' });
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
   const raw = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: null });
+
+  // Extract "Classificação após a ronda N" / "Ranking after round N"
+  let completedRound: number | null = null;
+  for (let i = 0; i < Math.min(25, raw.length); i++) {
+    const cell = String((raw[i] as unknown[])?.[0] ?? '');
+    const m = cell.match(/ronda\s+(\d+)|round\s+(\d+)/i);
+    if (m) { completedRound = parseInt(m[1] ?? m[2], 10); break; }
+  }
 
   let headerIdx = -1;
   let headerCells: string[] = [];
@@ -60,7 +73,7 @@ function parseExcel(buffer: ArrayBuffer): StandingRow[] {
     });
   }
 
-  return rows;
+  return { rows, completedRound };
 }
 
 export interface ImportStandingsResult {
@@ -74,7 +87,7 @@ export async function importStandings(
   fileBuffer: ArrayBuffer,
   pairingGroupId: string | null = null,
 ): Promise<ImportStandingsResult> {
-  const rows = parseExcel(fileBuffer);
+  const { rows, completedRound } = parseExcel(fileBuffer);
   if (rows.length === 0) return { matched: 0, unmatched: 0 };
 
   // Scope player lookup to the group so initial_ranking is unambiguous.
@@ -136,26 +149,34 @@ export async function importStandings(
       .eq('id', tournament_player_id);
   }
 
-  // Close most recent ongoing round for this group (mirrors the manual import behavior).
-  // Scoping to the group prevents closing a round that belongs to a different group.
-  let ongoingQuery = supabase
-    .from('rounds')
-    .select('id')
-    .eq('tournament_id', tournamentId)
-    .eq('status', 'ongoing')
-    .order('round_number', { ascending: false })
-    .limit(1);
-
-  if (pairingGroupId) {
-    ongoingQuery = ongoingQuery.eq('pairing_group_id', pairingGroupId);
-  } else {
-    ongoingQuery = ongoingQuery.is('pairing_group_id', null);
-  }
-
+  // Close all ongoing rounds that are known to be complete.
+  // The Excel title "Classificação após a ronda N" tells us up to which round results exist.
+  // Without that, fall back to closing only the most recent ongoing round.
   const hasResults = matched.some(({ row }) => row.points > 0);
-  const { data: ongoing } = await ongoingQuery.maybeSingle();
-  if (ongoing && hasResults) {
-    await supabase.from('rounds').update({ status: 'finished' }).eq('id', ongoing.id);
+  if (hasResults) {
+    let ongoingQuery = supabase
+      .from('rounds')
+      .select('id, round_number')
+      .eq('tournament_id', tournamentId)
+      .eq('status', 'ongoing');
+
+    if (pairingGroupId) {
+      ongoingQuery = ongoingQuery.eq('pairing_group_id', pairingGroupId);
+    } else {
+      ongoingQuery = ongoingQuery.is('pairing_group_id', null);
+    }
+
+    if (completedRound !== null) {
+      ongoingQuery = ongoingQuery.lte('round_number', completedRound);
+    } else {
+      ongoingQuery = ongoingQuery.order('round_number', { ascending: false }).limit(1);
+    }
+
+    const { data: ongoingRounds } = await ongoingQuery;
+    if (ongoingRounds && ongoingRounds.length > 0) {
+      const ids = ongoingRounds.map((r) => r.id as string);
+      await supabase.from('rounds').update({ status: 'finished' }).in('id', ids);
+    }
   }
 
   return { matched: matched.length, unmatched };
