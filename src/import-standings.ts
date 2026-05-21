@@ -28,16 +28,15 @@ function parseExcel(buffer: ArrayBuffer): StandingRow[] {
   }
   if (headerIdx === -1) throw new Error('Coluna "Nome" não encontrada.');
 
-  const col = (names: string[]) => {
-    const lower = names.map((n) => n.toLowerCase());
-    return headerCells.findIndex((h) => lower.includes(h.toLowerCase()));
-  };
-
-  const colNr = col(['Nr', 'Nº', 'No.', 'No']);
-  const colPts = col(['Pts.', 'Pts', 'Pontos', 'Punkte', 'Pnt']);
+  // "Nº.Inic.", "Nr", "No." etc.
+  const colNr = headerCells.findIndex((h) => /^n[rº°]/i.test(h) && !/^nome/i.test(h));
+  // "Pts. " (trailing space), "Pts.", "Pontos", "Punkte"
+  const colPts = headerCells.findIndex((h) => /^pts\.?\s*$/i.test(h) || /^pontos$/i.test(h) || /^punkte$/i.test(h));
+  const colName = headerCells.findIndex((h) => /^nome$/i.test(h) || /^name$/i.test(h));
+  // "Desp1", "Des1", "Des 1", "TB1", "Dp1" etc.
   const tbCols = headerCells
     .map((h, i) => ({ h, i }))
-    .filter(({ h }) => /^(Des\.?\s*\d+|TB\.?\s*\d+|Dp\.?\s*\d+)/i.test(h))
+    .filter(({ h }) => /^(des|tb|dp)/i.test(h) && /\d/.test(h))
     .sort((a, b) => a.i - b.i)
     .map(({ i }) => i);
 
@@ -53,7 +52,7 @@ function parseExcel(buffer: ArrayBuffer): StandingRow[] {
     rows.push({
       rank,
       initialRanking: colNr >= 0 ? Number(row[colNr]) || 0 : Number(row[1]) || 0,
-      name: String(row[3] ?? '').trim(),
+      name: String(row[colName >= 0 ? colName : 3] ?? '').trim(),
       points: Number(row[colPts]) || 0,
       buchholz: tbCols[0] !== undefined ? Number(row[tbCols[0]]) || 0 : 0,
       buchholzCut1: tbCols[1] !== undefined ? Number(row[tbCols[1]]) || 0 : 0,
