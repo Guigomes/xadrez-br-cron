@@ -136,11 +136,8 @@ export async function importStandings(
     ongoingQuery = ongoingQuery.is('pairing_group_id', null);
   }
 
-  const { data: ongoing } = await ongoingQuery.maybeSingle();
-  // Only close the round if at least one player has scored points.
-  // Before results are published the standings file already exists with everyone
-  // at 0 points — closing then would mark the round finished prematurely.
   const hasResults = matched.some(({ row }) => row.points > 0);
+  const { data: ongoing } = await ongoingQuery.maybeSingle();
   if (ongoing && hasResults) {
     await supabase.from('rounds').update({ status: 'finished' }).eq('id', ongoing.id);
   }

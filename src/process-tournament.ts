@@ -74,10 +74,19 @@ export async function processImport(
     pairingGroupId,
   );
 
-  // 2. Discover round count from the standings page (art=1)
+  // 2. Discover round count from standings (art=1) AND pairings index (art=2).
+  // When only pairings have been published (no results yet), art=1 has no rd= links
+  // so we must also check art=2 to detect the first round.
   const standingsPageUrl = buildArtUrl(info, 1);
-  const standingsHtml = await fetchHtml(standingsPageUrl);
-  const maxRound = extractMaxRound(standingsHtml);
+  const pairingsIndexUrl = buildArtUrl(info, 2);
+  const [standingsHtml, pairingsIndexHtml] = await Promise.all([
+    fetchHtml(standingsPageUrl),
+    fetchHtml(pairingsIndexUrl),
+  ]);
+  const maxRound = Math.max(
+    extractMaxRound(standingsHtml),
+    extractMaxRound(pairingsIndexHtml),
+  );
 
   // 3. Pairings for each round (art=2)
   // Use fetchExcelDirect so the SNode param is preserved — fetchExcelFromPage
