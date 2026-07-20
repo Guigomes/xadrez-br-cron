@@ -55,6 +55,17 @@ export async function processImport(
   supabase: SupabaseClient,
   row: ImportRow,
 ): Promise<string> {
+  // Torneios nativos são gerenciados pelo próprio chess-viewer — o import
+  // jamais deve tocá-los (sobrescreveria pareamentos gerados pela engine).
+  const { data: tournament } = await supabase
+    .from('tournaments')
+    .select('mode')
+    .eq('id', row.tournament_id)
+    .single();
+  if (tournament?.mode === 'native') {
+    throw new Error('torneio nativo — importação bloqueada (desabilite esta linha de import)');
+  }
+
   const info = parseBaseUrl(row.base_url);
   const pairingGroupId = await resolvePairingGroupId(
     supabase,
