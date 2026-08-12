@@ -145,6 +145,11 @@ export interface ImportPairingsResult {
   roundNumber: number;
   imported: number;
   unmatched: number;
+  /** id da rodada resolvida (null quando não havia dados para resolver). */
+  roundId: string | null;
+  /** true quando a rodada transicionou para um estado publicado nesta execução
+   *  (pending → ongoing/finished, ou ongoing → finished) — sinal para notificar. */
+  published: boolean;
 }
 
 export async function importPairings(
@@ -155,7 +160,7 @@ export async function importPairings(
 ): Promise<ImportPairingsResult> {
   const { roundNumber, pairings } = parseExcel(fileBuffer);
   if (pairings.length === 0) {
-    return { roundNumber, imported: 0, unmatched: 0 };
+    return { roundNumber, imported: 0, unmatched: 0, roundId: null, published: false };
   }
 
   // Find or create round scoped to this pairing group.
@@ -236,7 +241,7 @@ export async function importPairings(
   }
 
   if (toInsert.length === 0) {
-    return { roundNumber, imported: 0, unmatched };
+    return { roundNumber, imported: 0, unmatched, roundId: round.id as string, published: false };
   }
 
   // Replace pairings for this round (idempotent re-run)
@@ -252,9 +257,16 @@ export async function importPairings(
   const hasResults = pairings.length > 0;
   const allHaveResults = hasResults && pairings.every((p) => p.result !== '*');
   const desired = allHaveResults ? 'finished' : 'ongoing';
-  if (round.status !== desired) {
+  const published = round.status !== desired;
+  if (published) {
     await supabase.from('rounds').update({ status: desired }).eq('id', round.id);
   }
 
-  return { roundNumber, imported: toInsert.length, unmatched };
+  return {
+    roundNumber,
+    imported: toInsert.length,
+    unmatched,
+    roundId: round.id as string,
+    published,
+  };
 }

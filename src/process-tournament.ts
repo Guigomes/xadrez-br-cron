@@ -10,6 +10,7 @@ import {
 import { importPlayers } from './import-players.js';
 import { importPairings } from './import-pairings.js';
 import { importStandings } from './import-standings.js';
+import { notifyRoundPublished } from './notify.js';
 
 interface ImportRow {
   id: string;
@@ -105,6 +106,7 @@ export async function processImport(
   // which would mix pairings from all groups.
   let totalPairings = 0;
   let totalPairingsUnmatched = 0;
+  const roundsToNotify: string[] = [];
   for (let rd = 1; rd <= maxRound; rd++) {
     try {
       const pairingsUrl = buildArtUrl(info, 2, rd);
@@ -112,6 +114,7 @@ export async function processImport(
       const r = await importPairings(supabase, row.tournament_id, buf, pairingGroupId);
       totalPairings += r.imported;
       totalPairingsUnmatched += r.unmatched;
+      if (r.published && r.roundId) roundsToNotify.push(r.roundId);
     } catch (err) {
       // A future round that hasn't been published yet will fail to parse;
       // skip it and continue with the rest.
@@ -124,6 +127,13 @@ export async function processImport(
   // No local recalculation — it diverges from chess-results and is not needed.
   const standingsBuf = await fetchExcelDirect(standingsPageUrl);
   const standingsResult = await importStandings(supabase, row.tournament_id, standingsBuf, pairingGroupId);
+
+  // 5. Push das rodadas recém-publicadas — feito só depois de gravar pairings
+  // E standings, para a rota interna do app ler dados já consistentes. A
+  // deduplicação (rounds.notified_at) mora no app; aqui só disparamos.
+  for (const roundId of roundsToNotify) {
+    await notifyRoundPublished(roundId);
+  }
 
   return [
     `jogadores: ${playersResult.added}+${playersResult.reused} (criados ${playersResult.created}${playersResult.removed > 0 ? `, removidos ${playersResult.removed}` : ''})`,
