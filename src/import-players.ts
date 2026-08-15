@@ -1,6 +1,6 @@
 import * as XLSX from 'xlsx';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { normalize, colIndex } from './normalize.js';
+import { normalize, normalizeNameKey, colIndex } from './normalize.js';
 
 interface ImportedParticipant {
   fullName: string;
@@ -92,11 +92,13 @@ export async function importPlayers(
   }
 
   // Fetch existing tournament_players scoped to this group so we can:
-  // (a) skip re-insert for already-linked players, and
-  // (b) remove players who are no longer in the Excel at the end.
+  // (a) skip re-insert for already-linked players,
+  // (b) remove players who are no longer in the Excel at the end, and
+  // (c) reconhecer alguém que já está NESTE grupo mesmo se a fonte mudou a
+  //     grafia do nome entre uma execução e outra (ver byNameKey abaixo).
   let existingTPsQuery = supabase
     .from('tournament_players')
-    .select('id, player_id')
+    .select('id, player_id, player:players(full_name)')
     .eq('tournament_id', tournamentId);
   if (pairingGroupId) {
     existingTPsQuery = existingTPsQuery.eq('pairing_group_id', pairingGroupId);
@@ -110,6 +112,26 @@ export async function importPlayers(
   );
   // Track which player_ids appear in the current Excel so we can remove the rest
   const seenPlayerIds = new Set<string>();
+
+  // Casamento por nome tolerante à ordem das palavras, mas só entre quem já
+  // está NESTE tournament+group — escopo apertado de propósito, pra não
+  // arriscar casar gente errada em outro torneio. Existe porque um jogador
+  // já cadastrado aqui pode ter o nome reformatado numa execução seguinte
+  // (chess-results não é consistente entre exports do mesmo torneio ao
+  // longo do tempo); sem isso, o ilike exato abaixo não reconhece a mesma
+  // pessoa e cria um cadastro global duplicado — foi o que aconteceu com um
+  // jogador do FESTIVAL DA CRIANCA E JUVENTUDE 2026 (SUB11MISTO): o nome
+  // dele mudou de formatação entre duas execuções e ganhou um `players` novo
+  // do zero, órfão do histórico (rodadas, ranking) que já existia no antigo.
+  const byNameKey = new Map<string, string>();
+  const storedNameByPlayerId = new Map<string, string>();
+  for (const tp of existingTPs ?? []) {
+    const playerIdX = tp.player_id as string;
+    const fullName = ((tp.player as unknown) as { full_name?: string } | null)?.full_name ?? '';
+    storedNameByPlayerId.set(playerIdX, fullName);
+    const key = normalizeNameKey(fullName);
+    if (key && !byNameKey.has(key)) byNameKey.set(key, playerIdX);
+  }
 
   const { data: categoryRows } = await supabase
     .from('tournament_categories')
@@ -174,6 +196,21 @@ export async function importPlayers(
               .from('players')
               .update({ city: p.city, rating_std: p.ratingStd, federation: p.federation })
               .eq('id', playerId);
+          }
+        }
+      }
+
+      if (!playerId) {
+        const candidate = byNameKey.get(normalizeNameKey(p.fullName));
+        if (candidate) {
+          playerId = candidate;
+          reused++;
+          const stored = storedNameByPlayerId.get(candidate);
+          // Só grava se o texto realmente mudou — reconstrução por vírgula
+          // idêntica de execução em execução não deveria disparar update à
+          // toa. Quando muda, assume a formatação mais recente da fonte.
+          if (stored !== p.fullName) {
+            await supabase.from('players').update({ full_name: p.fullName }).eq('id', playerId);
           }
         }
       }
