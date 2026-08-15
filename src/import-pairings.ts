@@ -219,19 +219,28 @@ export async function importPairings(
   let unmatched = 0;
 
   for (const p of pairings) {
+    // Antes, o lado das brancas não casar derrubava a mesa INTEIRA — mesmo
+    // quando as pretas batiam certinho. Um jogador cujo nome vem do
+    // chess-results com a vírgula em posição diferente da usada na planilha
+    // de jogadores (ex.: "Vitor, Gabriel Felix Vilela" em vez de "Vilela,
+    // Vitor Gabriel Felix") fazia o adversário dele sumir do tabuleiro
+    // junto, sem log nenhum. Agora os dois lados são tratados do mesmo jeito:
+    // guarda quem casou, conta quem não casou, e só descarta a linha se
+    // NINGUÉM dos dois lados foi identificado (aí não sobra nada útil pra
+    // gravar).
     const whiteTpId = byName.get(normalizePairingName(p.whiteName));
-    if (!whiteTpId) {
-      unmatched++;
-      continue;
-    }
+    if (!whiteTpId) unmatched++;
+
     const blackTpId = p.blackName ? byName.get(normalizePairingName(p.blackName)) : undefined;
     if (!p.isBye && p.blackName && !blackTpId) unmatched++;
+
+    if (!whiteTpId && !blackTpId) continue;
 
     toInsert.push({
       tournament_id: tournamentId,
       round_id: round.id,
       board_number: p.board,
-      white_tp_id: whiteTpId,
+      white_tp_id: whiteTpId ?? null,
       black_tp_id: blackTpId ?? null,
       result: p.result,
       white_points: p.whitePoints,

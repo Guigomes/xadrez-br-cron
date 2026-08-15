@@ -135,9 +135,14 @@ export async function processImport(
     await notifyRoundPublished(roundId);
   }
 
+  // totalPairingsUnmatched era calculado e jogado fora — nenhum jogador ou
+  // sistema via esse número, então um nome que não casasse na importação
+  // ficava invisível até alguém notar o jogador sumido na tela e investigar
+  // manualmente. Agora entra no last_message (só quando > 0, pra não poluir
+  // o caso comum de tudo casar).
   return [
     `jogadores: ${playersResult.added}+${playersResult.reused} (criados ${playersResult.created}${playersResult.removed > 0 ? `, removidos ${playersResult.removed}` : ''})`,
-    `rodadas 1..${maxRound}: ${totalPairings} pareamentos`,
+    `rodadas 1..${maxRound}: ${totalPairings} pareamentos${totalPairingsUnmatched > 0 ? ` (${totalPairingsUnmatched} não identificados)` : ''}`,
     `classificação: ${standingsResult.matched} jogadores`,
   ].join(' · ');
 }
