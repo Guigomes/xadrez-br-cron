@@ -1,6 +1,6 @@
 import * as XLSX from 'xlsx';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { normalize } from './normalize.js';
+import { normalizeNameKey } from './normalize.js';
 
 type GameResult = '1-0' | '0-1' | '1/2-1/2' | '*' | 'bye';
 
@@ -32,21 +32,6 @@ function parseResult(raw: unknown): {
   return { result: '*', whitePoints: null, blackPoints: null };
 }
 
-/**
- * Normalize a player name from chess-results (which uses either
- *   "Lastname, Firstname"  or  "Firstname Lastname, "  with trailing comma)
- * into a canonical "Firstname Lastname" string, then lowercase + strip accents.
- * Matches the same transformation done by import-players, so names from
- * the players Excel and the pairings Excel produce the same key.
- */
-function normalizePairingName(raw: string): string {
-  const trimmed = raw.trim();
-  if (!trimmed) return '';
-  const reassembled = trimmed.includes(',')
-    ? trimmed.split(',').map((s) => s.trim()).filter(Boolean).reverse().join(' ')
-    : trimmed;
-  return normalize(reassembled);
-}
 
 function parseExcel(buffer: ArrayBuffer): ParsedFile {
   const workbook = XLSX.read(buffer, { type: 'array' });
@@ -194,9 +179,16 @@ export async function importPairings(
   }
   if (!round) throw new Error(`Não foi possível resolver a rodada ${roundNumber}`);
 
-  // Build player lookup by normalized name scoped to this group. We match by
-  // name because the pairings Excel from chess-results does not expose the
+  // Build player lookup by name scoped to this group. We match by name
+  // because the pairings Excel from chess-results does not expose the
   // initial ranking column for tournaments configured without ratings.
+  //
+  // A chave é normalizeNameKey (palavras ordenadas alfabeticamente), não a
+  // string exata: a planilha de jogadores e a de pareamentos de um mesmo
+  // torneio nem sempre grafam o nome na mesma convenção ("Sobrenome, Nome"
+  // vs "Nome, Resto"), e o import de cada uma reconstrói "Nome Sobrenome" à
+  // sua maneira — o resultado pode divergir mesmo sendo a mesma pessoa.
+  // Comparar por conjunto de palavras cancela essa inversão dos dois lados.
   let playersQuery = supabase
     .from('tournament_players')
     .select('id, player:players(full_name)')
@@ -211,7 +203,7 @@ export async function importPairings(
   const byName = new Map<string, string>();
   for (const tp of tPlayers ?? []) {
     const fullName = ((tp.player as unknown) as { full_name?: string } | null)?.full_name ?? '';
-    const key = normalize(fullName);
+    const key = normalizeNameKey(fullName);
     if (key) byName.set(key, tp.id as string);
   }
 
@@ -228,10 +220,10 @@ export async function importPairings(
     // guarda quem casou, conta quem não casou, e só descarta a linha se
     // NINGUÉM dos dois lados foi identificado (aí não sobra nada útil pra
     // gravar).
-    const whiteTpId = byName.get(normalizePairingName(p.whiteName));
+    const whiteTpId = byName.get(normalizeNameKey(p.whiteName));
     if (!whiteTpId) unmatched++;
 
-    const blackTpId = p.blackName ? byName.get(normalizePairingName(p.blackName)) : undefined;
+    const blackTpId = p.blackName ? byName.get(normalizeNameKey(p.blackName)) : undefined;
     if (!p.isBye && p.blackName && !blackTpId) unmatched++;
 
     if (!whiteTpId && !blackTpId) continue;
