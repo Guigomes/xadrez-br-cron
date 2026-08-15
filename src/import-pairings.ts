@@ -2,7 +2,7 @@ import * as XLSX from 'xlsx';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { normalizeNameKey } from './normalize.js';
 
-type GameResult = '1-0' | '0-1' | '1/2-1/2' | '*' | 'bye';
+type GameResult = '1-0' | '0-1' | '1/2-1/2' | '*' | 'bye' | 'forfeit_white' | 'forfeit_black' | 'double_forfeit';
 
 interface PairingRow {
   board: number;
@@ -29,6 +29,21 @@ function parseResult(raw: unknown): {
   if (s === '0 - 1') return { result: '0-1', whitePoints: 0.0, blackPoints: 1.0 };
   if (s.includes('½') || s.includes('1/2'))
     return { result: '1/2-1/2', whitePoints: 0.5, blackPoints: 0.5 };
+
+  // W.O. (jogador não compareceu): chess-results marca "+" do lado de quem
+  // venceu por ausência do adversário e "-" do lado ausente — achado ao vivo
+  // no FESTIVAL DA CRIANCA E JUVENTUDE 2026 (SUB17MISTO, mesas 96 e 100 da
+  // rodada 1): célula "- - +" == pretas venceram por W.O. (brancas ausente).
+  // Sem isso a mesa fica '*' pra sempre mesmo com o resultado já lançado na
+  // fonte, e a rodada nunca fecha — as colunas "Pts." vizinhas não ajudam
+  // (mostram o placar de ENTRADA no jogo, sempre 0 na rodada 1, não o que
+  // se ganhou nele). Ambos os lados ausentes ("- - -") não foi observado,
+  // mas double_forfeit já existe no enum do banco — cobre por completude.
+  const wo = s.replace(/\s+/g, '');
+  if (wo === '--+') return { result: 'forfeit_white', whitePoints: 0, blackPoints: 1 };
+  if (wo === '+--') return { result: 'forfeit_black', whitePoints: 1, blackPoints: 0 };
+  if (wo === '---') return { result: 'double_forfeit', whitePoints: 0, blackPoints: 0 };
+
   return { result: '*', whitePoints: null, blackPoints: null };
 }
 
