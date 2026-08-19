@@ -68,6 +68,10 @@ export interface ImportPlayersResult {
   skipped: number;
   failed: number;
   removed: number;
+  /** Homônimos de outro grupo do mesmo torneio, tratados como pessoa distinta. */
+  homonyms: number;
+  /** Descartados por colisão de chave — o participante NÃO entrou no torneio. */
+  collided: number;
 }
 
 export async function importPlayers(
@@ -88,7 +92,7 @@ export async function importPlayers(
 
   const participants = parseRows(rawRows);
   if (participants.length === 0) {
-    return { total: 0, added: 0, reused: 0, created: 0, skipped: 0, failed: 0, removed: 0 };
+    return { total: 0, added: 0, reused: 0, created: 0, skipped: 0, failed: 0, removed: 0, homonyms: 0, collided: 0 };
   }
 
   // Fetch existing tournament_players scoped to this group so we can:
@@ -109,6 +113,19 @@ export async function importPlayers(
   // Map player_id → tp.id for quick lookup
   const existingPlayerIds = new Map<string, string>(
     (existingTPs ?? []).map((tp) => [tp.player_id as string, tp.id as string]),
+  );
+
+  // Todos os player_id já inscritos NESTE torneio, em QUALQUER grupo — usado
+  // pra decidir homonímia (ver o casamento global por nome mais abaixo).
+  // Consulta separada porque existingTPs é filtrada pelo grupo atual.
+  const { data: tpsAnyGroup } = await supabase
+    .from('tournament_players')
+    .select('player_id')
+    .eq('tournament_id', tournamentId);
+  const playerIdsInOtherGroups = new Set<string>(
+    (tpsAnyGroup ?? [])
+      .map((tp) => tp.player_id as string)
+      .filter((id) => !existingPlayerIds.has(id)),
   );
   // Track which player_ids appear in the current Excel so we can remove the rest
   const seenPlayerIds = new Set<string>();
@@ -146,6 +163,8 @@ export async function importPlayers(
   let reused = 0;
   let skipped = 0;
   let failed = 0;
+  let homonyms = 0;
+  let collided = 0;
 
   for (const p of participants) {
     try {
@@ -221,7 +240,29 @@ export async function importPlayers(
           .select('id, full_name')
           .ilike('full_name', p.fullName)
           .limit(10);
-        const exact = matches?.find((m) => normalize(m.full_name as string) === normalize(p.fullName));
+        let exact = matches?.find((m) => normalize(m.full_name as string) === normalize(p.fullName));
+
+        // Homônimo dentro do mesmo torneio = pessoa DIFERENTE, não a mesma.
+        // Os grupos de um festival jogam em paralelo (mesmo dia, mesmo
+        // horário), então ninguém disputa dois — se o nome bate com alguém já
+        // inscrito em outro grupo, são duas pessoas com o mesmo nome.
+        //
+        // Sem esta guarda o casamento global por nome devolvia o `players` do
+        // outro grupo, o insert em tournament_players batia no
+        // UNIQUE (tournament_id, player_id), o catch classificava como
+        // `skipped` e o jogador sumia sem erro nenhum — junto com todos os
+        // pareamentos dele, que passavam a "não identificados". Visto no
+        // Festival Estadual da Criança e Juventude (11/04/2026): "Leonel,
+        // Mateus Fernando Silva" aparece no Sub 7 (Elo 0, U11) e no Sub 17
+        // Masculino (Elo 1800, U13) — confirmado pelo organizador como duas
+        // pessoas distintas. O segundo grupo importou 79 de 80 inscritos.
+        //
+        // Cair fora daqui deixa o fluxo criar um `players` novo, que é o certo.
+        if (exact && playerIdsInOtherGroups.has(exact.id as string)) {
+          exact = undefined;
+          homonyms++;
+        }
+
         if (exact) {
           playerId = exact.id as string;
           reused++;
@@ -290,7 +331,12 @@ export async function importPlayers(
       added++;
     } catch (err) {
       const msg = String((err as Error)?.message ?? '');
-      if (msg.includes('duplicate key') || msg.includes('unique')) skipped++;
+      // `skipped` (acima) é o caso benigno "já está neste grupo", normal em
+      // toda reexecução. Cair AQUI por chave duplicada é outra coisa: o
+      // player_id resolvido já pertence a outro grupo deste torneio e o
+      // participante fica de fora. Contar os dois juntos era o que escondia a
+      // perda — um número que sobe em toda reimportação não denuncia nada.
+      if (msg.includes('duplicate key') || msg.includes('unique')) collided++;
       else failed++;
     }
   }
@@ -310,5 +356,5 @@ export async function importPlayers(
     removed = tpIdsToRemove.length;
   }
 
-  return { total: participants.length, added, reused, created, skipped, failed, removed };
+  return { total: participants.length, added, reused, created, skipped, failed, removed, homonyms, collided };
 }

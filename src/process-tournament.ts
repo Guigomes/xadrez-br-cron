@@ -152,8 +152,14 @@ export async function processImport(
   // ficava invisível até alguém notar o jogador sumido na tela e investigar
   // manualmente. Agora entra no last_message (só quando > 0, pra não poluir
   // o caso comum de tudo casar).
+  // Participante que a fonte lista e que NÃO entrou. Era invisível: o contador
+  // de colisão de chave dividia variável com o "já está neste grupo", que sobe
+  // em toda reexecução — número alto o tempo todo não denuncia nada. Foi assim
+  // que o import terminou 'success' com 79 de 80 inscritos.
+  const perdidos = playersResult.collided + playersResult.failed;
+
   return [
-    `jogadores: ${playersResult.added}+${playersResult.reused} (criados ${playersResult.created}${playersResult.removed > 0 ? `, removidos ${playersResult.removed}` : ''})`,
+    `jogadores: ${playersResult.added}+${playersResult.reused} (criados ${playersResult.created}${playersResult.removed > 0 ? `, removidos ${playersResult.removed}` : ''}${playersResult.homonyms > 0 ? `, homônimos ${playersResult.homonyms}` : ''}${perdidos > 0 ? `, NÃO IMPORTADOS ${perdidos}` : ''})`,
     `rodadas 1..${maxRound}: ${totalPairings} pareamentos${totalPairingsUnmatched > 0 ? ` (${totalPairingsUnmatched} não identificados)` : ''}`,
     `classificação: ${standingsResult.matched} jogadores`,
   ].join(' · ');

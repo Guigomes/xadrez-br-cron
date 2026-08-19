@@ -12,6 +12,9 @@ interface PairingRow {
   whitePoints: number | null;
   blackPoints: number | null;
   isBye: boolean;
+  /** Nº. inicial de cada lado, quando a planilha traz a coluna. Ver byRank. */
+  whiteNo: number | null;
+  blackNo: number | null;
 }
 
 interface ParsedFile {
@@ -78,6 +81,8 @@ function parseExcel(buffer: ArrayBuffer): ParsedFile {
   let whiteNameIdx = 1;
   let resultIdx = -1;
   let blackNameIdx = -1;
+  let whiteNoIdx = -1;
+  let blackNoIdx = -1;
   for (let i = 0; i < raw.length; i++) {
     const row = raw[i] as unknown[];
     if (!row) continue;
@@ -89,6 +94,18 @@ function parseExcel(buffer: ArrayBuffer): ParsedFile {
     const bIdx = cells.findIndex((c) => c === 'Black');
     if (wIdx >= 0) whiteNameIdx = wIdx;
     blackNameIdx = bIdx >= 0 ? bIdx : rIdx + 2;
+
+    // Colunas "Nº." (ranking inicial) — presentes quando o torneio usa rating.
+    // A primeira é das brancas, a última das pretas. Só existem às vezes, daí
+    // continuarem sendo fallback e não a chave principal.
+    const noIdxs = cells
+      .map((c, idx) => (/^n[ºo°]?\.?$/i.test(c) ? idx : -1))
+      .filter((idx) => idx >= 0);
+    if (noIdxs.length >= 2) {
+      whiteNoIdx = noIdxs[0];
+      blackNoIdx = noIdxs[noIdxs.length - 1];
+    }
+
     dataStart = i + 1;
     break;
   }
@@ -103,6 +120,14 @@ function parseExcel(buffer: ArrayBuffer): ParsedFile {
 
     const whiteName = String(row[whiteNameIdx] ?? '').trim();
     if (!whiteName) continue;
+
+    const num = (idx: number): number | null => {
+      if (idx < 0) return null;
+      const n = Number(String(row[idx] ?? '').trim());
+      return Number.isFinite(n) && n > 0 ? n : null;
+    };
+    const whiteNo = num(whiteNoIdx);
+    const blackNo = num(blackNoIdx);
 
     const rawBlack = String(row[blackNameIdx] ?? '').trim();
     const blackLower = rawBlack.toLowerCase();
@@ -123,6 +148,8 @@ function parseExcel(buffer: ArrayBuffer): ParsedFile {
         whitePoints: Number.isFinite(points) && points > 0 ? points : 1.0,
         blackPoints: null,
         isBye: true,
+        whiteNo,
+        blackNo,
       });
     } else {
       const { result, whitePoints, blackPoints } = parseResult(row[resultIdx]);
@@ -134,6 +161,8 @@ function parseExcel(buffer: ArrayBuffer): ParsedFile {
         whitePoints,
         blackPoints,
         isBye: false,
+        whiteNo,
+        blackNo,
       });
     }
   }
@@ -206,7 +235,7 @@ export async function importPairings(
   // Comparar por conjunto de palavras cancela essa inversão dos dois lados.
   let playersQuery = supabase
     .from('tournament_players')
-    .select('id, player:players(full_name)')
+    .select('id, initial_ranking, player:players(full_name)')
     .eq('tournament_id', tournamentId);
 
   if (pairingGroupId) {
@@ -216,10 +245,21 @@ export async function importPairings(
   const { data: tPlayers } = await playersQuery;
 
   const byName = new Map<string, string>();
+  // Fallback por Nº. inicial, quando a planilha de pareamento traz a coluna.
+  // normalizeNameKey cancela troca de ORDEM das palavras, mas não nome do meio
+  // que aparece numa planilha e some na outra: no Sub 17 Masculino do Festival
+  // Estadual da Criança e Juventude, a lista de inscritos gravou "Vitor Hugo
+  // Araujo Fedrizzi" e a de pareamentos diz "Fedrizzi, Vitor Hugo" — as 6
+  // partidas dele ficaram "não identificadas" em todas as rodadas.
+  // O Nº. é exato dentro do grupo e não corre o risco de falso positivo que
+  // afrouxar a comparação de nome traria (homônimos são pessoas diferentes).
+  const byRank = new Map<number, string>();
   for (const tp of tPlayers ?? []) {
     const fullName = ((tp.player as unknown) as { full_name?: string } | null)?.full_name ?? '';
     const key = normalizeNameKey(fullName);
     if (key) byName.set(key, tp.id as string);
+    const rank = tp.initial_ranking as number | null;
+    if (rank != null) byRank.set(rank, tp.id as string);
   }
 
   const toInsert: Record<string, unknown>[] = [];
@@ -235,10 +275,15 @@ export async function importPairings(
     // guarda quem casou, conta quem não casou, e só descarta a linha se
     // NINGUÉM dos dois lados foi identificado (aí não sobra nada útil pra
     // gravar).
-    const whiteTpId = byName.get(normalizeNameKey(p.whiteName));
+    const whiteTpId =
+      byName.get(normalizeNameKey(p.whiteName)) ??
+      (p.whiteNo != null ? byRank.get(p.whiteNo) : undefined);
     if (!whiteTpId) unmatched++;
 
-    const blackTpId = p.blackName ? byName.get(normalizeNameKey(p.blackName)) : undefined;
+    const blackTpId = p.blackName
+      ? byName.get(normalizeNameKey(p.blackName)) ??
+        (p.blackNo != null ? byRank.get(p.blackNo) : undefined)
+      : undefined;
     if (!p.isBye && p.blackName && !blackTpId) unmatched++;
 
     if (!whiteTpId && !blackTpId) continue;
