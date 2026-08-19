@@ -140,3 +140,28 @@ export function extractMaxRound(html: string): number {
   }
   return max;
 }
+
+/**
+ * Reads the round count from the standings heading — "Classificação final após
+ * 6 rondas" / "Final Ranking after 6 Rounds" / "Endstand nach 6 Runden".
+ *
+ * Existe porque extractMaxRound falha em torneio com mais de 2 semanas: o
+ * chess-results troca os links de rodada por um botão ("Para reduzir a carga do
+ * servidor pela verificação diária de todos os links..."), então não sobra
+ * nenhum `rd=N` no HTML e a contagem dá 0 — o worker importava jogadores e
+ * classificação, e nenhuma rodada, sem erro nenhum. Medido em tnr1369969
+ * (abril, links escondidos, maxRound=0) contra tnr1449184 (agosto, links
+ * visíveis, maxRound=6).
+ *
+ * O cabeçalho está no mesmo HTML que o worker já baixa pra extractMaxRound —
+ * sem requisição extra. Casa também com o torneio em andamento, cujo título
+ * não traz "final" ("Classificação após 3 rondas").
+ */
+export function extractRoundCountFromHeading(html: string): number {
+  const m = html.match(
+    /(?:após|apos|after|nach)\s+(\d+)\s*(?:rondas?|rodadas?|rounds?|runden)/i,
+  );
+  if (!m) return 0;
+  const n = parseInt(m[1], 10);
+  return isNaN(n) ? 0 : n;
+}

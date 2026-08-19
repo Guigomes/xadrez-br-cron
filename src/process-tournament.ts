@@ -6,6 +6,7 @@ import {
   fetchExcelDirect,
   fetchHtml,
   extractMaxRound,
+  extractRoundCountFromHeading,
 } from './chess-results.js';
 import { importPlayers } from './import-players.js';
 import { importPairings } from './import-pairings.js';
@@ -95,10 +96,21 @@ export async function processImport(
     fetchHtml(standingsPageUrl),
     fetchHtml(pairingsIndexUrl),
   ]);
-  const maxRound = Math.max(
+  let maxRound = Math.max(
     extractMaxRound(standingsHtml),
     extractMaxRound(pairingsIndexHtml),
   );
+
+  // Fallback pro torneio com mais de 2 semanas: o chess-results esconde os
+  // links de rodada atrás de um botão e não sobra nenhum `rd=N` pra contar.
+  // O cabeçalho da classificação ("... após 6 rondas") continua no mesmo HTML.
+  // Sem isso o import terminava com "success" tendo gravado zero rodadas.
+  if (maxRound === 0) {
+    maxRound = Math.max(
+      extractRoundCountFromHeading(standingsHtml),
+      extractRoundCountFromHeading(pairingsIndexHtml),
+    );
+  }
 
   // 3. Pairings for each round (art=2)
   // Use fetchExcelDirect so the SNode param is preserved — fetchExcelFromPage
