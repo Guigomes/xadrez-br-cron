@@ -116,10 +116,31 @@ export async function processImport(
   // Use fetchExcelDirect so the SNode param is preserved — fetchExcelFromPage
   // extracts the Excel link from the rendered HTML and that link drops SNode,
   // which would mix pairings from all groups.
+  //
+  // Rodada já 'finished' localmente não muda mais no chess-results — refazer
+  // o download + parse dela em TODA execução (às vezes dezenas de rodadas
+  // antigas, toda vez) era o maior custo do worker sem nenhum ganho: o
+  // resultado de uma rodada encerrada não volta atrás.
+  let finishedRoundsQuery = supabase
+    .from('rounds')
+    .select('round_number')
+    .eq('tournament_id', row.tournament_id)
+    .eq('status', 'finished');
+  finishedRoundsQuery = pairingGroupId
+    ? finishedRoundsQuery.eq('pairing_group_id', pairingGroupId)
+    : finishedRoundsQuery.is('pairing_group_id', null);
+  const { data: finishedRoundRows } = await finishedRoundsQuery;
+  const finishedRounds = new Set((finishedRoundRows ?? []).map((r) => r.round_number as number));
+
   let totalPairings = 0;
   let totalPairingsUnmatched = 0;
+  let skippedFinishedRounds = 0;
   const roundsToNotify: string[] = [];
   for (let rd = 1; rd <= maxRound; rd++) {
+    if (finishedRounds.has(rd)) {
+      skippedFinishedRounds++;
+      continue;
+    }
     try {
       const pairingsUrl = buildArtUrl(info, 2, rd);
       const buf = await fetchExcelDirect(pairingsUrl);
@@ -160,7 +181,7 @@ export async function processImport(
 
   return [
     `jogadores: ${playersResult.added}+${playersResult.reused} (criados ${playersResult.created}${playersResult.removed > 0 ? `, removidos ${playersResult.removed}` : ''}${playersResult.homonyms > 0 ? `, homônimos ${playersResult.homonyms}` : ''}${perdidos > 0 ? `, NÃO IMPORTADOS ${perdidos}` : ''})`,
-    `rodadas 1..${maxRound}: ${totalPairings} pareamentos${totalPairingsUnmatched > 0 ? ` (${totalPairingsUnmatched} não identificados)` : ''}`,
+    `rodadas 1..${maxRound}: ${totalPairings} pareamentos${totalPairingsUnmatched > 0 ? ` (${totalPairingsUnmatched} não identificados)` : ''}${skippedFinishedRounds > 0 ? ` · ${skippedFinishedRounds} já encerradas, puladas` : ''}`,
     `classificação: ${standingsResult.matched} jogadores`,
   ].join(' · ');
 }

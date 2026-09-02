@@ -221,7 +221,16 @@ export async function importPlayers(
 
       if (!playerId) {
         const candidate = byNameKey.get(normalizeNameKey(p.fullName));
-        if (candidate) {
+        // seenPlayerIds.has(candidate): outra linha do MESMO Excel, ainda
+        // nesta mesma execução, já reivindicou esse player_id — ou seja, tem
+        // duas pessoas com o mesmo nome NESTE grupo (não coberto pela guarda
+        // de homônimo entre grupos abaixo, que só olha OUTROS grupos). Sem
+        // esta checagem as duas linhas do Excel convergiam pro mesmo
+        // tournament_players.id: a segunda pessoa nunca ganhava cadastro
+        // próprio, e cada reexecução sobrescrevia o registro com o que veio
+        // por último — dava exatamente a "confusão completa" ao editar a
+        // lista de inscritos antes da 1ª rodada.
+        if (candidate && !seenPlayerIds.has(candidate)) {
           playerId = candidate;
           reused++;
           const stored = storedNameByPlayerId.get(candidate);
@@ -231,6 +240,8 @@ export async function importPlayers(
           if (stored !== p.fullName) {
             await supabase.from('players').update({ full_name: p.fullName }).eq('id', playerId);
           }
+        } else if (candidate) {
+          homonyms++;
         }
       }
 
@@ -259,6 +270,15 @@ export async function importPlayers(
         //
         // Cair fora daqui deixa o fluxo criar um `players` novo, que é o certo.
         if (exact && playerIdsInOtherGroups.has(exact.id as string)) {
+          exact = undefined;
+          homonyms++;
+        }
+
+        // Mesma guarda do bloco de byNameKey acima, pro caminho de nome
+        // exato global: outra linha deste MESMO Excel já reivindicou este
+        // player_id nesta execução — segunda pessoa com o nome idêntico no
+        // mesmo grupo, cai fora daqui e vai criar um `players` novo abaixo.
+        if (exact && seenPlayerIds.has(exact.id as string)) {
           exact = undefined;
           homonyms++;
         }

@@ -1,5 +1,6 @@
 import * as XLSX from 'xlsx';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { normalizeNameKey } from './normalize.js';
 
 interface StandingRow {
   rank: number;
@@ -90,12 +91,15 @@ export async function importStandings(
   const { rows, completedRound } = parseExcel(fileBuffer);
   if (rows.length === 0) return { matched: 0, unmatched: 0 };
 
-  // Scope player lookup to the group so initial_ranking is unambiguous.
-  // Each group has its own 1-N ranking; without scoping, rankings from
-  // different groups collide and map to the wrong player.
+  // Scope player lookup to the group. Nome é a chave primária (mesmo padrão
+  // de import-pairings.ts), initial_ranking só entra como fallback: a coluna
+  // "Nº" é renumerada pelo chess-results toda vez que a lista de inscritos
+  // muda antes da 1ª rodada, então casar só por ela atribui pontuação/rank
+  // de um jogador a OUTRO sempre que a lista foi editada entre duas
+  // execuções — sem erro nenhum, silencioso.
   let playersQuery = supabase
     .from('tournament_players')
-    .select('id, initial_ranking')
+    .select('id, initial_ranking, player:players(full_name)')
     .eq('tournament_id', tournamentId);
 
   if (pairingGroupId) {
@@ -104,15 +108,21 @@ export async function importStandings(
 
   const { data: tPlayers } = await playersQuery;
 
-  const byInitial = new Map(
-    (tPlayers ?? []).map((tp) => [tp.initial_ranking as number, tp.id as string]),
-  );
+  const byName = new Map<string, string>();
+  const byInitial = new Map<number, string>();
+  for (const tp of tPlayers ?? []) {
+    const fullName = ((tp.player as unknown) as { full_name?: string } | null)?.full_name ?? '';
+    const key = normalizeNameKey(fullName);
+    if (key) byName.set(key, tp.id as string);
+    const rank = tp.initial_ranking as number | null;
+    if (rank != null) byInitial.set(rank, tp.id as string);
+  }
 
   const matched: { tournament_player_id: string; row: StandingRow }[] = [];
   let unmatched = 0;
 
   for (const row of rows) {
-    const tpId = byInitial.get(row.initialRanking);
+    const tpId = byName.get(normalizeNameKey(row.name)) ?? byInitial.get(row.initialRanking);
     if (tpId) matched.push({ tournament_player_id: tpId, row });
     else unmatched++;
   }
