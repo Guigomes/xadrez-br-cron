@@ -82,6 +82,45 @@ export interface ImportStandingsResult {
   unmatched: number;
 }
 
+interface GameCounts { games: number; wins: number; draws: number; losses: number; }
+
+/**
+ * `standings.games_played/wins/draws/losses` nunca era escrito por este
+ * import (upsertRows só levava points/tiebreaks) — ficava travado no
+ * default (0) pra sempre, mesmo com resultado real em `pairings`. Sintoma
+ * relatado: chatbot do chess-viewer dizendo "ainda não jogou" pra jogador
+ * com pontos > 0, porque leu esse campo cru. Recalcula aqui a partir de
+ * `pairings`, mesma lógica de recalculate_standings (chess-viewer migration
+ * 012): bye conta ponto mas não conta jogo/vitória/empate/derrota.
+ */
+async function computeGameCounts(
+  supabase: SupabaseClient,
+  tournamentId: string,
+): Promise<Map<string, GameCounts>> {
+  const { data } = await supabase
+    .from('pairings')
+    .select('white_tp_id, black_tp_id, result, is_bye')
+    .eq('tournament_id', tournamentId)
+    .neq('result', '*');
+
+  const counts = new Map<string, GameCounts>();
+  const bump = (tpId: string | null, field: keyof GameCounts) => {
+    if (!tpId) return;
+    const c = counts.get(tpId) ?? { games: 0, wins: 0, draws: 0, losses: 0 };
+    c[field]++;
+    counts.set(tpId, c);
+  };
+  for (const p of (data ?? []) as { white_tp_id: string | null; black_tp_id: string | null; result: string; is_bye: boolean }[]) {
+    if (p.is_bye) continue;
+    bump(p.white_tp_id, 'games');
+    bump(p.black_tp_id, 'games');
+    if (p.result === '1-0') { bump(p.white_tp_id, 'wins'); bump(p.black_tp_id, 'losses'); }
+    else if (p.result === '0-1') { bump(p.black_tp_id, 'wins'); bump(p.white_tp_id, 'losses'); }
+    else if (p.result === '1/2-1/2') { bump(p.white_tp_id, 'draws'); bump(p.black_tp_id, 'draws'); }
+  }
+  return counts;
+}
+
 export async function importStandings(
   supabase: SupabaseClient,
   tournamentId: string,
@@ -129,16 +168,25 @@ export async function importStandings(
 
   if (matched.length === 0) return { matched: 0, unmatched };
 
-  const upsertRows = matched.map(({ tournament_player_id, row }) => ({
-    tournament_id: tournamentId,
-    tournament_player_id,
-    rank: row.rank,
-    points: row.points,
-    buchholz: row.buchholz,
-    buchholz_cut1: row.buchholzCut1,
-    sonneborn_berger: row.sonnebornBerger,
-    updated_at: new Date().toISOString(),
-  }));
+  const gameCounts = await computeGameCounts(supabase, tournamentId);
+
+  const upsertRows = matched.map(({ tournament_player_id, row }) => {
+    const c = gameCounts.get(tournament_player_id) ?? { games: 0, wins: 0, draws: 0, losses: 0 };
+    return {
+      tournament_id: tournamentId,
+      tournament_player_id,
+      rank: row.rank,
+      points: row.points,
+      buchholz: row.buchholz,
+      buchholz_cut1: row.buchholzCut1,
+      sonneborn_berger: row.sonnebornBerger,
+      games_played: c.games,
+      wins: c.wins,
+      draws: c.draws,
+      losses: c.losses,
+      updated_at: new Date().toISOString(),
+    };
+  });
 
   const { error } = await supabase
     .from('standings')
