@@ -232,8 +232,26 @@ export async function importStandings(
 
     const { data: ongoingRounds } = await ongoingQuery;
     if (ongoingRounds && ongoingRounds.length > 0) {
+      // "Classificação após a ronda N" é a rodada que a fonte está EXIBINDO,
+      // não garantia de que ela terminou — visto ao vivo num torneio
+      // (tnr1485382) em que o cabeçalho já dizia "após a ronda 2" com metade
+      // das mesas da própria rodada 2 ainda '*'. Fechar só por esse
+      // cabeçalho travava a rodada como 'finished' pra sempre —
+      // process-tournament.ts nunca reprocessa rodada finished — e os
+      // resultados que a fonte publicava depois nunca mais entravam.
+      // Confirma contra os pareamentos reais (mesmo critério de
+      // import-pairings.ts: nenhuma mesa '*') antes de fechar cada uma.
       const ids = ongoingRounds.map((r) => r.id as string);
-      await supabase.from('rounds').update({ status: 'finished' }).in('id', ids);
+      const { data: unresolvedRows } = await supabase
+        .from('pairings')
+        .select('round_id')
+        .in('round_id', ids)
+        .eq('result', '*');
+      const roundsWithUnresolved = new Set((unresolvedRows ?? []).map((p) => p.round_id as string));
+      const idsToClose = ids.filter((id) => !roundsWithUnresolved.has(id));
+      if (idsToClose.length > 0) {
+        await supabase.from('rounds').update({ status: 'finished' }).in('id', idsToClose);
+      }
     }
   }
 
