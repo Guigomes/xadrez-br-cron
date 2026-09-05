@@ -2,7 +2,7 @@ import * as XLSX from 'xlsx';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { normalizeNameKey } from './normalize.js';
 
-type GameResult = '1-0' | '0-1' | '1/2-1/2' | '*' | 'bye' | 'forfeit_white' | 'forfeit_black' | 'double_forfeit';
+type GameResult = '1-0' | '0-1' | '1/2-1/2' | '*' | 'bye' | 'not_paired' | 'forfeit_white' | 'forfeit_black' | 'double_forfeit';
 
 interface PairingRow {
   board: number;
@@ -131,21 +131,32 @@ function parseExcel(buffer: ArrayBuffer): ParsedFile {
 
     const rawBlack = String(row[blackNameIdx] ?? '').trim();
     const blackLower = rawBlack.toLowerCase();
-    const isBye =
-      blackLower === 'bye' ||
-      blackLower === 'não emparceirado' ||
-      rawBlack === '';
+    // "bye" (sistema suíço pareou sozinho, sobrou um número ímpar de gente) e
+    // "não emparceirado" (chess-results: jogador ficou de fora por decisão/
+    // ausência, não é o bye automático) chegavam como o mesmo result='bye' —
+    // visto ao vivo num torneio (tnr1485382) com os dois casos juntos na
+    // mesma rodada. Mantém isBye=true nos dois (nenhum conta como jogo pra
+    // games_played/wins/draws/losses — ver computeGameCounts em
+    // import-standings.ts), mas grava o result certo pra tela mostrar qual é
+    // qual (novo valor de enum 'not_paired', migration 077 do chess-viewer).
+    const isUnpaired = blackLower === 'não emparceirado' || blackLower === 'nao emparceirado';
+    const isBye = blackLower === 'bye' || rawBlack === '' || isUnpaired;
 
     if (isBye) {
-      // Bye rows in the 8-col layout look like: [board, name, gr, 0, 1, null, "bye", null]
-      // — col[resultIdx] is the numeric point value (1 or 0.5), not "1 - 0".
-      const points = Number(row[resultIdx]);
+      // Ponto de bye/não-emparceirado vem NUMÉRICO nesta coluna (1, 0.5 como
+      // "½", ou até 0 — um "não emparceirado" pode legitimamente valer zero).
+      // Number("½") dá NaN, então o parser antigo tratava ½ E 0 como "não deu
+      // pra ler, assume bye cheio (1.0)" — um jogador com 0 pontos reais
+      // ganhava 1 de graça. Só assume 1.0 quando a célula realmente não tem
+      // valor numérico nenhum (célula vazia).
+      const raw = String(row[resultIdx] ?? '').trim();
+      const points = raw.includes('½') || raw.includes('1/2') ? 0.5 : Number(raw);
       pairings.push({
         board,
         whiteName,
         blackName: null,
-        result: 'bye',
-        whitePoints: Number.isFinite(points) && points > 0 ? points : 1.0,
+        result: isUnpaired ? 'not_paired' : 'bye',
+        whitePoints: Number.isFinite(points) ? points : 1.0,
         blackPoints: null,
         isBye: true,
         whiteNo,
