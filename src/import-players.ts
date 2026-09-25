@@ -10,8 +10,15 @@ interface ImportedParticipant {
   ratingStd?: number;
   initialRanking?: number;
   category?: string;
-  city?: string;
+  state?: string;
+  clubOrSchool?: string;
 }
+
+const BR_STATE_CODES = new Set([
+  'AC', 'AL', 'AP', 'AM', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MT', 'MS',
+  'MG', 'PA', 'PB', 'PR', 'PE', 'PI', 'RJ', 'RN', 'RS', 'RO', 'RR', 'SC',
+  'SP', 'SE', 'TO',
+]);
 
 function parseRows(rows: unknown[][]): ImportedParticipant[] {
   const asStr = rows.map((row) => row.map((c) => String(c ?? '').trim()));
@@ -30,7 +37,8 @@ function parseRows(rows: unknown[][]): ImportedParticipant[] {
   const fedIdx = colIndex(headers, ['fed']);
   const eloIdx = colIndex(headers, ['elo', 'elon', 'elof', 'rtg', 'rating']);
   const typeIdx = colIndex(headers, ['tipo']);
-  const cityIdx = colIndex(headers, ['clube/cidade', 'clube / cidade', 'clube cidade']);
+  const stateIdx = colIndex(headers, ['gr', 'uf', 'estado', 'state']);
+  const clubIdx = colIndex(headers, ['clube/cidade', 'clube / cidade', 'clube cidade']);
   // Título (CM, AFM, WCM, GM...) vem numa coluna SEM cabeçalho, sempre logo
   // antes de "Nome" — visto ao vivo num torneio (tnr1485382): header
   // ["Nº.", "", "Nome", "EloI", "EloN", "sexo", "Tipo"]. Só assume essa
@@ -53,6 +61,7 @@ function parseRows(rows: unknown[][]): ImportedParticipant[] {
     const ratingStd = parseInt(eloIdx >= 0 ? row[eloIdx] : '', 10);
     const initialRanking = parseInt(numIdx >= 0 ? row[numIdx] : '', 10);
 
+    const rawState = stateIdx >= 0 ? row[stateIdx].toUpperCase() : '';
     out.push({
       fullName,
       title: titleIdx >= 0 ? row[titleIdx] || undefined : undefined,
@@ -61,7 +70,8 @@ function parseRows(rows: unknown[][]): ImportedParticipant[] {
       ratingStd: Number.isFinite(ratingStd) && ratingStd > 0 ? ratingStd : undefined,
       initialRanking: Number.isFinite(initialRanking) && initialRanking > 0 ? initialRanking : undefined,
       category: typeIdx >= 0 ? row[typeIdx] || undefined : undefined,
-      city: cityIdx >= 0 ? row[cityIdx] || undefined : undefined,
+      state: BR_STATE_CODES.has(rawState) ? rawState : undefined,
+      clubOrSchool: clubIdx >= 0 ? row[clubIdx] || undefined : undefined,
     });
   }
 
@@ -221,10 +231,10 @@ export async function importPlayers(
         if (match?.id) {
           playerId = match.id as string;
           reused++;
-          if (p.city || p.ratingStd || p.federation || p.title) {
+          if (p.state || p.clubOrSchool || p.ratingStd || p.federation || p.title) {
             await supabase
               .from('players')
-              .update({ city: p.city, rating_std: p.ratingStd, federation: p.federation, title: p.title })
+              .update({ state: p.state, club_or_school: p.clubOrSchool, rating_std: p.ratingStd, federation: p.federation, title: p.title })
               .eq('id', playerId);
           }
         }
@@ -249,10 +259,10 @@ export async function importPlayers(
           // Só grava se o texto realmente mudou — reconstrução por vírgula
           // idêntica de execução em execução não deveria disparar update à
           // toa. Quando muda, assume a formatação mais recente da fonte.
-          if (stored !== p.fullName || (p.title && p.title !== storedTitle)) {
+          if (stored !== p.fullName || (p.title && p.title !== storedTitle) || p.state || p.clubOrSchool || p.ratingStd || p.federation) {
             await supabase
               .from('players')
-              .update({ full_name: p.fullName, title: p.title })
+              .update({ full_name: p.fullName, title: p.title, state: p.state, club_or_school: p.clubOrSchool, rating_std: p.ratingStd, federation: p.federation })
               .eq('id', playerId);
           }
         } else if (candidate) {
@@ -301,12 +311,13 @@ export async function importPlayers(
         if (exact) {
           playerId = exact.id as string;
           reused++;
-          if (p.fideId || p.city || p.ratingStd || p.title) {
+          if (p.fideId || p.state || p.clubOrSchool || p.ratingStd || p.title) {
             await supabase
               .from('players')
               .update({
                 fide_id: p.fideId,
-                city: p.city,
+                state: p.state,
+                club_or_school: p.clubOrSchool,
                 rating_std: p.ratingStd,
                 federation: p.federation,
                 title: p.title,
@@ -325,7 +336,8 @@ export async function importPlayers(
             fide_id: p.fideId,
             federation: p.federation ?? 'BRA',
             rating_std: p.ratingStd,
-            city: p.city,
+            state: p.state,
+            club_or_school: p.clubOrSchool,
           })
           .select('id')
           .single();
