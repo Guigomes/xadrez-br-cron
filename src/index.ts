@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { createSupabase } from './supabase.js';
 import { processImport } from './process-tournament.js';
+import { notifyTournamentSummary } from './notify.js';
 
 interface ImportRow {
   id: string;
@@ -95,6 +96,12 @@ async function main() {
         console.error(`${label} ERRO — ${message}`);
         errCount++;
       }
+    }
+
+    // O resumo para quem não segue jogadores só pode ser avaliado depois que
+    // todas as categorias do torneio terminaram este ciclo de sincronização.
+    for (const tournamentId of new Set(rows.map((row) => row.tournament_id))) {
+      await notifyTournamentSummary(tournamentId);
     }
 
     console.log(`Concluído. ${okCount} ok, ${errCount} com erro.`);

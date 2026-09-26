@@ -7,6 +7,17 @@ export function normalize(value: string): string {
 }
 
 /**
+ * Produz o nome de exibição sem inferir qual lado da vírgula é sobrenome.
+ * O texto original é preservado em tournament_players.source_name.
+ */
+export function displayNameFromSource(value: string): string {
+  return value
+    .replace(/\s*,\s*/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
  * Chave de casamento de nome de jogador, insensível à ORDEM das palavras —
  * não só a acento/caixa. chess-results não é consistente entre a planilha
  * de jogadores e a de pareamentos de um mesmo torneio: às vezes uma delas

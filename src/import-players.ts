@@ -1,9 +1,10 @@
 import * as XLSX from 'xlsx';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { normalize, normalizeNameKey, colIndex } from './normalize.js';
+import { displayNameFromSource, normalize, normalizeNameKey, colIndex } from './normalize.js';
 
 interface ImportedParticipant {
   fullName: string;
+  sourceName: string;
   title?: string;
   fideId?: string;
   federation?: string;
@@ -50,10 +51,8 @@ function parseRows(rows: unknown[][]): ImportedParticipant[] {
 
   const out: ImportedParticipant[] = [];
   for (const row of asStr.slice(headerIdx + 1)) {
-    const rawName = row[nameIdx] ?? '';
-    const fullName = rawName.includes(',')
-      ? rawName.split(',').map((s) => s.trim()).filter(Boolean).reverse().join(' ')
-      : rawName;
+    const sourceName = (row[nameIdx] ?? '').replace(/\s+/g, ' ').trim();
+    const fullName = displayNameFromSource(sourceName);
     if (!fullName) continue;
     if (normalize(fullName).startsWith('encontrara todos os detalhes')) break;
     if (normalize(fullName).includes('chess-results')) continue;
@@ -64,6 +63,7 @@ function parseRows(rows: unknown[][]): ImportedParticipant[] {
     const rawState = stateIdx >= 0 ? row[stateIdx].toUpperCase() : '';
     out.push({
       fullName,
+      sourceName,
       title: titleIdx >= 0 ? row[titleIdx] || undefined : undefined,
       fideId: fideIdx >= 0 ? row[fideIdx] || undefined : undefined,
       federation: fedIdx >= 0 ? row[fedIdx] || undefined : undefined,
@@ -120,7 +120,7 @@ export async function importPlayers(
   //     grafia do nome entre uma execução e outra (ver byNameKey abaixo).
   let existingTPsQuery = supabase
     .from('tournament_players')
-    .select('id, player_id, player:players(full_name, title)')
+    .select('id, player_id, source_name, player:players(full_name, title)')
     .eq('tournament_id', tournamentId);
   if (pairingGroupId) {
     existingTPsQuery = existingTPsQuery.eq('pairing_group_id', pairingGroupId);
@@ -167,8 +167,10 @@ export async function importPlayers(
     const fullName = playerRow?.full_name ?? '';
     storedNameByPlayerId.set(playerIdX, fullName);
     storedTitleByPlayerId.set(playerIdX, playerRow?.title ?? null);
-    const key = normalizeNameKey(fullName);
-    if (key && !byNameKey.has(key)) byNameKey.set(key, playerIdX);
+    for (const name of [fullName, tp.source_name as string | null]) {
+      const key = normalizeNameKey(name ?? '');
+      if (key && !byNameKey.has(key)) byNameKey.set(key, playerIdX);
+    }
   }
 
   const { data: categoryRows } = await supabase
@@ -224,17 +226,27 @@ export async function importPlayers(
       if (p.fideId) {
         const { data: match } = await supabase
           .from('players')
-          .select('id')
+          .select('id, full_name')
           .eq('fide_id', p.fideId)
           .limit(1)
           .maybeSingle();
         if (match?.id) {
           playerId = match.id as string;
           reused++;
-          if (p.state || p.clubOrSchool || p.ratingStd || p.federation || p.title) {
+          const shouldUpdateName =
+            match.full_name !== p.fullName &&
+            normalizeNameKey(match.full_name as string) === normalizeNameKey(p.fullName);
+          if (shouldUpdateName || p.state || p.clubOrSchool || p.ratingStd || p.federation || p.title) {
             await supabase
               .from('players')
-              .update({ state: p.state, club_or_school: p.clubOrSchool, rating_std: p.ratingStd, federation: p.federation, title: p.title })
+              .update({
+                ...(shouldUpdateName ? { full_name: p.fullName } : {}),
+                state: p.state,
+                club_or_school: p.clubOrSchool,
+                rating_std: p.ratingStd,
+                federation: p.federation,
+                title: p.title,
+              })
               .eq('id', playerId);
           }
         }
@@ -361,6 +373,7 @@ export async function importPlayers(
             pairing_group_id: pairingGroupId ?? null,
             initial_ranking: p.initialRanking ?? null,
             category_id: categoryId ?? null,
+            source_name: p.sourceName,
           })
           .eq('tournament_id', tournamentId)
           .eq('player_id', playerId);
@@ -374,6 +387,7 @@ export async function importPlayers(
         initial_ranking: p.initialRanking,
         category_id: categoryId,
         pairing_group_id: pairingGroupId ?? null,
+        source_name: p.sourceName,
       });
 
       existingPlayerIds.set(playerId, '');  // mark as known so duplicates in Excel are skipped
