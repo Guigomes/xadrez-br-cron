@@ -37,6 +37,16 @@ export function normalizeNameKey(value: string): string {
     .join(' ');
 }
 
+/**
+ * Identidade forte dentro de um grupo importado. O ranking inicial é único no
+ * Chess-Results e impede que dois homônimos sejam unidos só porque o nome tem
+ * as mesmas palavras em outra ordem.
+ */
+export function participantIdentityKey(value: string, initialRanking?: number | null): string | null {
+  const nameKey = normalizeNameKey(value);
+  return nameKey && initialRanking != null ? `${initialRanking}:${nameKey}` : null;
+}
+
 export function colIndex(headers: string[], aliases: string[]): number {
   const norm = aliases.map(normalize);
   return headers.findIndex((h) => norm.includes(normalize(h)));

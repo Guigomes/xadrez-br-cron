@@ -192,7 +192,7 @@ export async function processImport(
   const perdidos = playersResult.collided + playersResult.failed;
 
   return [
-    `jogadores: ${playersResult.added}+${playersResult.reused} (criados ${playersResult.created}${playersResult.removed > 0 ? `, removidos ${playersResult.removed}` : ''}${playersResult.homonyms > 0 ? `, homônimos ${playersResult.homonyms}` : ''}${perdidos > 0 ? `, NÃO IMPORTADOS ${perdidos}` : ''})`,
+    `jogadores: ${playersResult.added}+${playersResult.reused} (criados ${playersResult.created}${playersResult.relinked > 0 ? `, relincados ${playersResult.relinked}` : ''}${playersResult.removed > 0 ? `, removidos ${playersResult.removed}` : ''}${playersResult.notRemoved > 0 ? `, NÃO REMOVIDOS ${playersResult.notRemoved}` : ''}${playersResult.homonyms > 0 ? `, homônimos ${playersResult.homonyms}` : ''}${perdidos > 0 ? `, NÃO IMPORTADOS ${perdidos}` : ''})`,
     `rodadas 1..${maxRound}: ${totalPairings} pareamentos${totalPairingsUnmatched > 0 ? ` (${totalPairingsUnmatched} não identificados)` : ''}${skippedFinishedRounds > 0 ? ` · ${skippedFinishedRounds} já encerradas, puladas` : ''}`,
     `classificação: ${standingsResult.matched} jogadores`,
   ].join(' · ');

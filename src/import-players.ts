@@ -1,6 +1,12 @@
 import * as XLSX from 'xlsx';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { displayNameFromSource, normalize, normalizeNameKey, colIndex } from './normalize.js';
+import {
+  displayNameFromSource,
+  normalize,
+  normalizeNameKey,
+  participantIdentityKey,
+  colIndex,
+} from './normalize.js';
 
 interface ImportedParticipant {
   fullName: string;
@@ -86,6 +92,10 @@ export interface ImportPlayersResult {
   skipped: number;
   failed: number;
   removed: number;
+  /** Vínculos antigos que passaram a apontar para o cadastro identificado por FIDE. */
+  relinked: number;
+  /** Vínculos obsoletos que o banco preservou por ainda terem referências. */
+  notRemoved: number;
   /** Homônimos de outro grupo do mesmo torneio, tratados como pessoa distinta. */
   homonyms: number;
   /** Descartados por colisão de chave — o participante NÃO entrou no torneio. */
@@ -110,7 +120,7 @@ export async function importPlayers(
 
   const participants = parseRows(rawRows);
   if (participants.length === 0) {
-    return { total: 0, added: 0, reused: 0, created: 0, skipped: 0, failed: 0, removed: 0, homonyms: 0, collided: 0 };
+    return { total: 0, added: 0, reused: 0, created: 0, skipped: 0, failed: 0, removed: 0, relinked: 0, notRemoved: 0, homonyms: 0, collided: 0 };
   }
 
   // Fetch existing tournament_players scoped to this group so we can:
@@ -120,7 +130,7 @@ export async function importPlayers(
   //     grafia do nome entre uma execução e outra (ver byNameKey abaixo).
   let existingTPsQuery = supabase
     .from('tournament_players')
-    .select('id, player_id, source_name, player:players(full_name, title)')
+    .select('id, player_id, source_name, initial_ranking, player:players(full_name, title, fide_id)')
     .eq('tournament_id', tournamentId);
   if (pairingGroupId) {
     existingTPsQuery = existingTPsQuery.eq('pairing_group_id', pairingGroupId);
@@ -147,6 +157,7 @@ export async function importPlayers(
   );
   // Track which player_ids appear in the current Excel so we can remove the rest
   const seenPlayerIds = new Set<string>();
+  const relinkedTpIds = new Set<string>();
 
   // Casamento por nome tolerante à ordem das palavras, mas só entre quem já
   // está NESTE tournament+group — escopo apertado de propósito, pra não
@@ -159,17 +170,22 @@ export async function importPlayers(
   // dele mudou de formatação entre duas execuções e ganhou um `players` novo
   // do zero, órfão do histórico (rodadas, ranking) que já existia no antigo.
   const byNameKey = new Map<string, string>();
+  const byIdentityKey = new Map<string, string>();
   const storedNameByPlayerId = new Map<string, string>();
   const storedTitleByPlayerId = new Map<string, string | null>();
+  const storedFideByPlayerId = new Map<string, string | null>();
   for (const tp of existingTPs ?? []) {
     const playerIdX = tp.player_id as string;
-    const playerRow = (tp.player as unknown) as { full_name?: string; title?: string | null } | null;
+    const playerRow = (tp.player as unknown) as { full_name?: string; title?: string | null; fide_id?: string | null } | null;
     const fullName = playerRow?.full_name ?? '';
     storedNameByPlayerId.set(playerIdX, fullName);
     storedTitleByPlayerId.set(playerIdX, playerRow?.title ?? null);
+    storedFideByPlayerId.set(playerIdX, playerRow?.fide_id ?? null);
     for (const name of [fullName, tp.source_name as string | null]) {
       const key = normalizeNameKey(name ?? '');
       if (key && !byNameKey.has(key)) byNameKey.set(key, playerIdX);
+      const identityKey = participantIdentityKey(name ?? '', tp.initial_ranking as number | null);
+      if (identityKey && !byIdentityKey.has(identityKey)) byIdentityKey.set(identityKey, playerIdX);
     }
   }
 
@@ -186,6 +202,7 @@ export async function importPlayers(
   let reused = 0;
   let skipped = 0;
   let failed = 0;
+  let relinked = 0;
   let homonyms = 0;
   let collided = 0;
 
@@ -363,6 +380,38 @@ export async function importPlayers(
         failed++;
         continue;
       }
+
+      // O cadastro global identificado por FIDE pode já existir, enquanto o
+      // vínculo deste torneio nasceu antes, sem FIDE e com o nome em outra
+      // ordem. Preserve o tournament_players.id antigo (e suas partidas) e
+      // troque apenas o player_id. Nome + ranking inicial evitam unir homônimos.
+      if (p.fideId && !existingPlayerIds.has(playerId) && !playerIdsInOtherGroups.has(playerId)) {
+        const identityKey = participantIdentityKey(p.fullName, p.initialRanking);
+        const previousPlayerId = identityKey ? byIdentityKey.get(identityKey) : null;
+        const previousFideId = previousPlayerId ? storedFideByPlayerId.get(previousPlayerId) : null;
+        const existingTpId = previousPlayerId ? existingPlayerIds.get(previousPlayerId) : null;
+
+        if (
+          previousPlayerId
+          && previousPlayerId !== playerId
+          && existingTpId
+          && (!previousFideId || previousFideId === p.fideId)
+        ) {
+          const { error: relinkError } = await supabase
+            .from('tournament_players')
+            .update({ player_id: playerId })
+            .eq('id', existingTpId);
+          if (relinkError) throw new Error(`falha ao relincar participante por FIDE: ${relinkError.message}`);
+
+          existingPlayerIds.delete(previousPlayerId);
+          existingPlayerIds.set(playerId, existingTpId);
+          relinkedTpIds.add(existingTpId);
+          byNameKey.set(normalizeNameKey(p.fullName), playerId);
+          if (identityKey) byIdentityKey.set(identityKey, playerId);
+          relinked++;
+        }
+      }
+
       seenPlayerIds.add(playerId);
 
       if (existingPlayerIds.has(playerId)) {
@@ -407,17 +456,23 @@ export async function importPlayers(
   // Remove players that were in this group before but are no longer in the Excel.
   // This handles cases where participants leave or are moved to a different group.
   let removed = 0;
+  let notRemoved = 0;
   const tpIdsToRemove = (existingTPs ?? [])
-    .filter((tp) => !seenPlayerIds.has(tp.player_id as string))
+    .filter((tp) => !relinkedTpIds.has(tp.id as string) && !seenPlayerIds.has(tp.player_id as string))
     .map((tp) => tp.id as string);
 
   if (tpIdsToRemove.length > 0) {
-    await supabase
+    const { error: removeError } = await supabase
       .from('tournament_players')
       .delete()
       .in('id', tpIdsToRemove);
-    removed = tpIdsToRemove.length;
+    if (removeError) {
+      notRemoved = tpIdsToRemove.length;
+      console.warn(`Participantes obsoletos preservados: ${removeError.message}`);
+    } else {
+      removed = tpIdsToRemove.length;
+    }
   }
 
-  return { total: participants.length, added, reused, created, skipped, failed, removed, homonyms, collided };
+  return { total: participants.length, added, reused, created, skipped, failed, removed, relinked, notRemoved, homonyms, collided };
 }
