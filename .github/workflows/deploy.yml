@@ -34,5 +34,7 @@ jobs:
         run: |
           gcloud run jobs update xadrez-br-cron \
             --image=southamerica-east1-docker.pkg.dev/torneios-xadrez/cron-import/cron-import:latest \
+            --task-timeout=30m \
+            --max-retries=0 \
             --region=southamerica-east1 \
             --project=torneios-xadrez
