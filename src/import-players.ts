@@ -12,6 +12,8 @@ interface ImportedParticipant {
   fullName: string;
   sourceName: string;
   title?: string;
+  /** ID CBX (coluna "ID" da planilha). É a identidade principal do jogador. */
+  cbxId?: string;
   fideId?: string;
   federation?: string;
   ratingStd?: number;
@@ -27,6 +29,25 @@ const BR_STATE_CODES = new Set([
   'SP', 'SE', 'TO',
 ]);
 
+/** CBX vem como número puro; qualquer outra coisa na coluna "ID" é ignorada. */
+function parseCbxId(raw: string | undefined): string | undefined {
+  const v = (raw ?? '').trim();
+  return /^\d{1,7}$/.test(v) && Number(v) > 0 ? String(Number(v)) : undefined;
+}
+
+/**
+ * Trava de segurança para o casamento por CBX: o número digitado na inscrição às
+ * vezes é de outra pessoa (acontece muito). Só aceita o casamento se os dois
+ * nomes dividem pelo menos 2 palavras (ou todas, se um deles tiver só 1-2).
+ */
+function namesShareWords(a: string, b: string): boolean {
+  const A = normalizeNameKey(a).split(' ').filter((w) => w.length > 1);
+  const B = new Set(normalizeNameKey(b).split(' ').filter((w) => w.length > 1));
+  if (!A.length || !B.size) return false;
+  const shared = A.filter((w) => B.has(w)).length;
+  return shared >= Math.min(2, A.length, B.size);
+}
+
 function parseRows(rows: unknown[][]): ImportedParticipant[] {
   const asStr = rows.map((row) => row.map((c) => String(c ?? '').trim()));
 
@@ -40,6 +61,7 @@ function parseRows(rows: unknown[][]): ImportedParticipant[] {
   const headers = asStr[headerIdx];
   const numIdx = colIndex(headers, ['nº.', 'nº', 'no.', 'no', 'num', 'numero']);
   const nameIdx = colIndex(headers, ['nome']);
+  const cbxIdx = colIndex(headers, ['id']);
   const fideIdx = colIndex(headers, ['id fide']);
   const fedIdx = colIndex(headers, ['fed']);
   const eloIdx = colIndex(headers, ['elo', 'elon', 'elof', 'rtg', 'rating']);
@@ -71,6 +93,7 @@ function parseRows(rows: unknown[][]): ImportedParticipant[] {
       fullName,
       sourceName,
       title: titleIdx >= 0 ? row[titleIdx] || undefined : undefined,
+      cbxId: cbxIdx >= 0 ? parseCbxId(row[cbxIdx]) : undefined,
       fideId: fideIdx >= 0 ? row[fideIdx] || undefined : undefined,
       federation: fedIdx >= 0 ? row[fedIdx] || undefined : undefined,
       ratingStd: Number.isFinite(ratingStd) && ratingStd > 0 ? ratingStd : undefined,
@@ -100,6 +123,10 @@ export interface ImportPlayersResult {
   homonyms: number;
   /** Descartados por colisão de chave — o participante NÃO entrou no torneio. */
   collided: number;
+  /** Casados pelo CBX (identidade principal). */
+  byCbx: number;
+  /** CBX da planilha que pertence a outra pessoa (nome sem relação): ignorado. */
+  cbxMismatch: number;
 }
 
 export async function importPlayers(
@@ -120,7 +147,7 @@ export async function importPlayers(
 
   const participants = parseRows(rawRows);
   if (participants.length === 0) {
-    return { total: 0, added: 0, reused: 0, created: 0, skipped: 0, failed: 0, removed: 0, relinked: 0, notRemoved: 0, homonyms: 0, collided: 0 };
+    return { total: 0, added: 0, reused: 0, created: 0, skipped: 0, failed: 0, removed: 0, relinked: 0, notRemoved: 0, homonyms: 0, collided: 0, byCbx: 0, cbxMismatch: 0 };
   }
 
   // Fetch existing tournament_players scoped to this group so we can:
@@ -205,6 +232,8 @@ export async function importPlayers(
   let relinked = 0;
   let homonyms = 0;
   let collided = 0;
+  let byCbx = 0;
+  let cbxMismatch = 0;
 
   for (const p of participants) {
     try {
@@ -239,21 +268,66 @@ export async function importPlayers(
       }
 
       let playerId: string | null = null;
+      // CBX é a identidade principal; FIDE e nome só entram quando não há CBX.
+      let cbxId = p.cbxId;
+      let fideId = p.fideId;
 
-      if (p.fideId) {
+      if (cbxId) {
         const { data: match } = await supabase
           .from('players')
-          .select('id, full_name')
-          .eq('fide_id', p.fideId)
+          .select('id, full_name, fide_id')
+          .eq('cbx_id', cbxId)
           .limit(1)
           .maybeSingle();
         if (match?.id) {
+          if (!namesShareWords(match.full_name as string, p.fullName)) {
+            cbxMismatch++;
+            cbxId = undefined; // CBX digitado errado: cai para FIDE / nome
+          } else if (seenPlayerIds.has(match.id as string)) {
+            homonyms++; // mesmo CBX duas vezes no mesmo Excel: a segunda linha não funde
+            cbxId = undefined;
+          } else {
+            playerId = match.id as string;
+            byCbx++;
+            reused++;
+            // FIDE só entra se o cadastro ainda não tem e ninguém mais usa
+            let setFide: string | undefined;
+            if (fideId && !match.fide_id) {
+              const { data: other } = await supabase.from('players').select('id').eq('fide_id', fideId).limit(1).maybeSingle();
+              if (!other?.id) setFide = fideId;
+            }
+            await supabase
+              .from('players')
+              .update({
+                ...(setFide ? { fide_id: setFide } : {}),
+                state: p.state,
+                club_or_school: p.clubOrSchool,
+                rating_std: p.ratingStd,
+                federation: p.federation,
+                title: p.title,
+              })
+              .eq('id', playerId);
+          }
+        }
+      }
+
+      if (!playerId && fideId) {
+        const { data: match } = await supabase
+          .from('players')
+          .select('id, full_name, cbx_id')
+          .eq('fide_id', fideId)
+          .limit(1)
+          .maybeSingle();
+        // FIDE de quem tem outro CBX é de outra pessoa: não casa nem repete o FIDE
+        if (match?.id && cbxId && match.cbx_id && match.cbx_id !== cbxId) {
+          fideId = undefined;
+        } else if (match?.id) {
           playerId = match.id as string;
           reused++;
           const shouldUpdateName =
             match.full_name !== p.fullName &&
             normalizeNameKey(match.full_name as string) === normalizeNameKey(p.fullName);
-          if (shouldUpdateName || p.state || p.clubOrSchool || p.ratingStd || p.federation || p.title) {
+          if (shouldUpdateName || cbxId || p.state || p.clubOrSchool || p.ratingStd || p.federation || p.title) {
             await supabase
               .from('players')
               .update({
@@ -263,6 +337,7 @@ export async function importPlayers(
                 rating_std: p.ratingStd,
                 federation: p.federation,
                 title: p.title,
+                ...(cbxId && !match.cbx_id ? { cbx_id: cbxId } : {}),
               })
               .eq('id', playerId);
           }
@@ -302,7 +377,7 @@ export async function importPlayers(
       if (!playerId) {
         const { data: matches } = await supabase
           .from('players')
-          .select('id, full_name')
+          .select('id, full_name, cbx_id, fide_id')
           .ilike('full_name', p.fullName)
           .limit(10);
         let exact = matches?.find((m) => normalize(m.full_name as string) === normalize(p.fullName));
@@ -337,14 +412,21 @@ export async function importPlayers(
           homonyms++;
         }
 
+        // Homônimo com ID diferente é outra pessoa: não casa nem sobrescreve o ID
+        if (exact && ((cbxId && exact.cbx_id && exact.cbx_id !== cbxId) || (fideId && exact.fide_id && exact.fide_id !== fideId))) {
+          exact = undefined;
+          homonyms++;
+        }
+
         if (exact) {
           playerId = exact.id as string;
           reused++;
-          if (p.fideId || p.state || p.clubOrSchool || p.ratingStd || p.title) {
+          if (fideId || cbxId || p.state || p.clubOrSchool || p.ratingStd || p.title) {
             await supabase
               .from('players')
               .update({
-                fide_id: p.fideId,
+                ...(fideId && !exact.fide_id ? { fide_id: fideId } : {}),
+                ...(cbxId && !exact.cbx_id ? { cbx_id: cbxId } : {}),
                 state: p.state,
                 club_or_school: p.clubOrSchool,
                 rating_std: p.ratingStd,
@@ -362,7 +444,8 @@ export async function importPlayers(
           .insert({
             full_name: p.fullName,
             title: p.title,
-            fide_id: p.fideId,
+            cbx_id: cbxId,
+            fide_id: fideId,
             federation: p.federation ?? 'BRA',
             rating_std: p.ratingStd,
             state: p.state,
@@ -385,7 +468,7 @@ export async function importPlayers(
       // vínculo deste torneio nasceu antes, sem FIDE e com o nome em outra
       // ordem. Preserve o tournament_players.id antigo (e suas partidas) e
       // troque apenas o player_id. Nome + ranking inicial evitam unir homônimos.
-      if (p.fideId && !existingPlayerIds.has(playerId) && !playerIdsInOtherGroups.has(playerId)) {
+      if ((p.fideId || p.cbxId) && !existingPlayerIds.has(playerId) && !playerIdsInOtherGroups.has(playerId)) {
         const identityKey = participantIdentityKey(p.fullName, p.initialRanking);
         const previousPlayerId = identityKey ? byIdentityKey.get(identityKey) : null;
         const previousFideId = previousPlayerId ? storedFideByPlayerId.get(previousPlayerId) : null;
@@ -474,5 +557,5 @@ export async function importPlayers(
     }
   }
 
-  return { total: participants.length, added, reused, created, skipped, failed, removed, relinked, notRemoved, homonyms, collided };
+  return { total: participants.length, added, reused, created, skipped, failed, removed, relinked, notRemoved, homonyms, collided, byCbx, cbxMismatch };
 }
