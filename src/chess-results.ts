@@ -89,6 +89,7 @@ export async function fetchExcelFromPage(pageUrl: string): Promise<ArrayBuffer> 
     const fallback = new URL(pageUrl);
     fallback.searchParams.set('prt', '4');
     fallback.searchParams.set('excel', '2010');
+    fallback.searchParams.set('zeilen', '99999');
     excelUrl = fallback.toString();
   }
 
@@ -112,6 +113,8 @@ export async function fetchExcelDirect(pageUrl: string): Promise<ArrayBuffer> {
   const u = new URL(pageUrl);
   u.searchParams.set('prt', '4');
   u.searchParams.set('excel', '2010');
+  // sem zeilen o chess-results corta a planilha em 150 linhas (torneio grande perde jogadores e classificação)
+  u.searchParams.set('zeilen', '99999');
   const excelUrl = u.toString();
 
   const res = await fetch(excelUrl, { headers: { 'User-Agent': UA } });
