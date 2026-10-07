@@ -129,6 +129,26 @@ export interface ImportPlayersResult {
   cbxMismatch: number;
 }
 
+/**
+ * Torneios escolares e festivais não publicam a coluna "ID" (CBX) na lista de jogadores, mas a ficha do
+ * jogador (art=9) traz o "Ident-Number", que nos torneios brasileiros é o ID CBX. Uma requisição por
+ * jogador, então só para quem ainda não está no grupo e com teto por execução.
+ */
+const MAX_IDENT_LOOKUPS_PER_RUN = 40;
+
+async function fetchIdentNumber(origin: string, tnr: string, snr: number, snode: string | null): Promise<string | undefined> {
+  try {
+    const res = await fetch(`${origin}/tnr${tnr}.aspx?lan=1&art=9&snr=${snr}${snode ? `&SNode=${snode}` : ''}`, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; chess-viewer-cron-import)' },
+    });
+    if (!res.ok) return undefined;
+    const text = (await res.text()).replace(/<script[\s\S]*?<\/script>/g, ' ').replace(/<[^>]+>/g, ' ');
+    return parseCbxId(text.match(/Ident-Number\s*(\d+)/)?.[1]);
+  } catch {
+    return undefined;
+  }
+}
+
 export async function importPlayers(
   supabase: SupabaseClient,
   tournamentId: string,
@@ -136,6 +156,8 @@ export async function importPlayers(
   pairingGroupId: string | null,
   /** When true, re-assigns pairing_group_id on already-existing tournament_players rows */
   repairGroups = true,
+  /** Torneio de origem: permite buscar o ID CBX na ficha do jogador quando a lista não traz. */
+  source?: { origin: string; tnr: string; snode: string | null },
 ): Promise<ImportPlayersResult> {
   const workbook = XLSX.read(fileBuffer, { type: 'array' });
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
@@ -213,6 +235,25 @@ export async function importPlayers(
       if (key && !byNameKey.has(key)) byNameKey.set(key, playerIdX);
       const identityKey = participantIdentityKey(name ?? '', tp.initial_ranking as number | null);
       if (identityKey && !byIdentityKey.has(identityKey)) byIdentityKey.set(identityKey, playerIdX);
+    }
+  }
+
+  // Sem ID CBX na lista: tenta a ficha do jogador, só para quem ainda não está neste grupo.
+  if (source) {
+    const pending = participants.filter(
+      (p) =>
+        !p.cbxId &&
+        p.initialRanking != null &&
+        !byNameKey.has(normalizeNameKey(p.fullName)) &&
+        !byIdentityKey.has(participantIdentityKey(p.fullName, p.initialRanking) ?? ''),
+    );
+    const batch = pending.slice(0, MAX_IDENT_LOOKUPS_PER_RUN);
+    for (let i = 0; i < batch.length; i += 5) {
+      await Promise.all(
+        batch.slice(i, i + 5).map(async (p) => {
+          p.cbxId = await fetchIdentNumber(source.origin, source.tnr, p.initialRanking!, source.snode);
+        }),
+      );
     }
   }
 

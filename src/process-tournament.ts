@@ -129,6 +129,8 @@ export async function processImport(
     row.tournament_id,
     playersBuf,
     pairingGroupId,
+    true,
+    { origin: new URL(info.href).origin, tnr: info.tnr, snode: info.snode },
   );
 
   // 2. Discover round count from standings (art=1) AND pairings index (art=2).
