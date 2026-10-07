@@ -11,6 +11,7 @@ import {
 import { importPlayers } from './import-players.js';
 import { importPairings } from './import-pairings.js';
 import { importStandings } from './import-standings.js';
+import { importPgns } from './import-pgns.js';
 import { notifyRoundPublished } from './notify.js';
 
 interface ImportRow {
@@ -51,6 +52,49 @@ async function resolvePairingGroupId(
     .select('id')
     .single();
   return (created?.id as string) ?? null;
+}
+
+// PGN: só com o grupo encerrado e poucas vezes (até 3, com 6 h entre elas). Cada busca custa
+// 1–2 requisições quando o torneio não publica lances e uma por partida quando publica.
+const PGN_MAX_TRIES = 3;
+const PGN_RETRY_HOURS = 6;
+
+async function maybeImportPgns(
+  supabase: SupabaseClient,
+  row: ImportRow,
+  info: ReturnType<typeof parseBaseUrl>,
+  pairingGroupId: string | null,
+  maxRound: number,
+): Promise<string | null> {
+  if (maxRound < 1) return null;
+  const { data: imp, error } = await supabase
+    .from('tournament_imports')
+    .select('pgn_checked_at, pgn_check_count')
+    .eq('id', row.id)
+    .single();
+  if (error || !imp) return null; // marcador ainda não existe no banco: segue sem PGN
+  const tries = (imp.pgn_check_count as number | null) ?? 0;
+  if (tries >= PGN_MAX_TRIES) return null;
+  const last = imp.pgn_checked_at as string | null;
+  if (last && Date.now() - Date.parse(last) < PGN_RETRY_HOURS * 3_600_000) return null;
+
+  let roundsQuery = supabase.from('rounds').select('status').eq('tournament_id', row.tournament_id);
+  roundsQuery = pairingGroupId ? roundsQuery.eq('pairing_group_id', pairingGroupId) : roundsQuery.is('pairing_group_id', null);
+  const { data: rounds } = await roundsQuery;
+  if (!rounds?.length || rounds.length < maxRound || rounds.some((r) => r.status !== 'finished')) return null;
+
+  try {
+    const r = await importPgns(supabase, row.tournament_id, info, pairingGroupId, maxRound);
+    await supabase
+      .from('tournament_imports')
+      .update({ pgn_checked_at: new Date().toISOString(), pgn_check_count: r.saved > 0 ? PGN_MAX_TRIES : tries + 1 })
+      .eq('id', row.id);
+    return r.saved > 0 ? `PGN: ${r.saved} de ${r.candidates} partidas` : null;
+  } catch (err) {
+    // PGN é um extra: nunca derruba a importação do torneio
+    console.warn(`[${row.id}] PGN falhou: ${(err as Error).message}`);
+    return null;
+  }
 }
 
 export async function processImport(
@@ -173,6 +217,9 @@ export async function processImport(
   const standingsBuf = await fetchExcelDirect(standingsPageUrl);
   const standingsResult = await importStandings(supabase, row.tournament_id, standingsBuf, pairingGroupId);
 
+  // 4b. PGN dos torneios que publicam os lances (só com o grupo encerrado)
+  const pgnNote = await maybeImportPgns(supabase, row, info, pairingGroupId, maxRound);
+
   // 5. Processa os eventos de push só depois de gravar pairings E standings,
   // para a rota interna do app ler dados consistentes. A deduplicação por
   // evento mora no app; aqui só disparamos.
@@ -195,5 +242,6 @@ export async function processImport(
     `jogadores: ${playersResult.added}+${playersResult.reused} (criados ${playersResult.created}${playersResult.relinked > 0 ? `, relincados ${playersResult.relinked}` : ''}${playersResult.removed > 0 ? `, removidos ${playersResult.removed}` : ''}${playersResult.notRemoved > 0 ? `, NÃO REMOVIDOS ${playersResult.notRemoved}` : ''}${playersResult.homonyms > 0 ? `, homônimos ${playersResult.homonyms}` : ''}${perdidos > 0 ? `, NÃO IMPORTADOS ${perdidos}` : ''})`,
     `rodadas 1..${maxRound}: ${totalPairings} pareamentos${totalPairingsUnmatched > 0 ? ` (${totalPairingsUnmatched} não identificados)` : ''}${skippedFinishedRounds > 0 ? ` · ${skippedFinishedRounds} já encerradas, puladas` : ''}`,
     `classificação: ${standingsResult.matched} jogadores`,
+    ...(pgnNote ? [pgnNote] : []),
   ].join(' · ');
 }
