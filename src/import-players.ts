@@ -2,6 +2,7 @@ import * as XLSX from 'xlsx';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   displayNameFromSource,
+  canonicalCategoryName,
   normalize,
   normalizeNameKey,
   participantIdentityKey,
@@ -98,7 +99,7 @@ function parseRows(rows: unknown[][]): ImportedParticipant[] {
       federation: fedIdx >= 0 ? row[fedIdx] || undefined : undefined,
       ratingStd: Number.isFinite(ratingStd) && ratingStd > 0 ? ratingStd : undefined,
       initialRanking: Number.isFinite(initialRanking) && initialRanking > 0 ? initialRanking : undefined,
-      category: typeIdx >= 0 ? row[typeIdx] || undefined : undefined,
+      category: typeIdx >= 0 && row[typeIdx] ? canonicalCategoryName(row[typeIdx]) : undefined,
       state: BR_STATE_CODES.has(rawState) ? rawState : undefined,
       clubOrSchool: clubIdx >= 0 ? row[clubIdx] || undefined : undefined,
     });
@@ -262,7 +263,7 @@ export async function importPlayers(
     .select('id, name')
     .eq('tournament_id', tournamentId);
   const categoryMap = new Map<string, string>(
-    (categoryRows ?? []).map((r) => [normalize(r.name as string), r.id as string]),
+    (categoryRows ?? []).map((r) => [normalize(canonicalCategoryName(r.name as string)), r.id as string]),
   );
 
   let added = 0;

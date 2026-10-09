@@ -51,3 +51,17 @@ export function colIndex(headers: string[], aliases: string[]): number {
   const norm = aliases.map(normalize);
   return headers.findIndex((h) => norm.includes(normalize(h)));
 }
+
+/**
+ * Nome canônico de categoria de idade/senior: letra + 2 dígitos ("U8" e "U08"
+ * viram "U08", "s050" vira "S50"). O chess-results mistura as grafias no
+ * mesmo torneio (cada organizador digita de um jeito), e sem isto cada grafia
+ * virava uma categoria separada. Nome que não segue o padrão (ex.: "Feminino")
+ * só tem o espaço aparado.
+ */
+export function canonicalCategoryName(raw: string): string {
+  const v = raw.trim().replace(/\s+/g, ' ');
+  const m = v.match(/^([A-Za-z])\s*0*(\d{1,2})$/);
+  if (!m) return v;
+  return `${m[1].toUpperCase()}${m[2].padStart(2, '0')}`;
+}
