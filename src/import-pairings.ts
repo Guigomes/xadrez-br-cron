@@ -318,10 +318,25 @@ export async function importPairings(
     return { roundNumber, imported: 0, unmatched, roundId: round.id as string, published: false };
   }
 
-  // Replace pairings for this round (idempotent re-run)
-  await supabase.from('pairings').delete().eq('round_id', round.id);
-  const { error } = await supabase.from('pairings').insert(toInsert);
-  if (error) throw new Error(error.message);
+  // Regrava as mesas só se o conteúdo mudou (re-emparceiramento, resultado novo).
+  // Sem isso, cada execução apagava e recriava todas as mesas — trocando os ids
+  // (e derrubando em cascata o que pendura neles, como o PGN) mesmo sem mudança.
+  const { data: existing } = await supabase
+    .from('pairings')
+    .select('board_number, white_tp_id, black_tp_id, result, white_points, black_points, is_bye')
+    .eq('round_id', round.id);
+  const sig = (r: Record<string, unknown>) =>
+    [r.board_number, r.white_tp_id ?? '', r.black_tp_id ?? '', r.result, r.white_points ?? '', r.black_points ?? '', r.is_bye ? 1 : 0].join('|');
+  const existingSigs = new Set((existing ?? []).map((r) => sig(r as Record<string, unknown>)));
+  const unchanged =
+    (existing?.length ?? 0) === toInsert.length && toInsert.every((r) => existingSigs.has(sig(r)));
+
+  if (!unchanged) {
+    // Replace pairings for this round (idempotent re-run)
+    await supabase.from('pairings').delete().eq('round_id', round.id);
+    const { error } = await supabase.from('pairings').insert(toInsert);
+    if (error) throw new Error(error.message);
+  }
 
   // Advance round status:
   //   pending  → ongoing  when pairings are published but some games are still '*'

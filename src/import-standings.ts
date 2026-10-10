@@ -159,14 +159,26 @@ export async function importStandings(
     if (rank != null) byInitial.set(rank, tp.id as string);
   }
 
-  const matched: { tournament_player_id: string; row: StandingRow }[] = [];
+  // Um jogador por linha do upsert: se duas linhas da classificação caírem no mesmo
+  // inscrito (o Nº. inicial é renumerado quando entra gente nova no meio da execução),
+  // vale a que casou pelo NOME — o fallback por Nº. não pode sobrescrever nem duplicar.
+  // Sem isso o upsert inteiro falhava com "ON CONFLICT DO UPDATE command cannot affect
+  // row a second time".
+  const matchedById = new Map<string, { tournament_player_id: string; row: StandingRow; byNameMatch: boolean }>();
   let unmatched = 0;
 
   for (const row of rows) {
-    const tpId = byName.get(normalizeNameKey(row.name)) ?? byInitial.get(row.initialRanking);
-    if (tpId) matched.push({ tournament_player_id: tpId, row });
-    else unmatched++;
+    const nameId = byName.get(normalizeNameKey(row.name));
+    const tpId = nameId ?? byInitial.get(row.initialRanking);
+    if (!tpId) {
+      unmatched++;
+      continue;
+    }
+    const current = matchedById.get(tpId);
+    if (current && current.byNameMatch && !nameId) continue;
+    matchedById.set(tpId, { tournament_player_id: tpId, row, byNameMatch: !!nameId });
   }
+  const matched = [...matchedById.values()];
 
   if (matched.length === 0) return { matched: 0, unmatched };
 

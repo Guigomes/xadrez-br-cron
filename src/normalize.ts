@@ -30,7 +30,9 @@ export function displayNameFromSource(value: string): string {
  * Vírgula é tratada como separador de palavra, não como marcador de ordem.
  */
 export function normalizeNameKey(value: string): string {
-  return normalize(value.replace(/,/g, ' '))
+  // chess-results acrescenta marcadores de rodapé ao nome ("Fulana de Tal *)"), que não fazem
+  // parte dele — sem tirar, a mesa ficava sem adversário.
+  return normalize(value.replace(/\*\)/g, ' ').replace(/,/g, ' '))
     .split(/\s+/)
     .filter(Boolean)
     .sort()
