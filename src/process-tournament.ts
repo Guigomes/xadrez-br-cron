@@ -172,10 +172,10 @@ export async function processImport(
   // extracts the Excel link from the rendered HTML and that link drops SNode,
   // which would mix pairings from all groups.
   //
-  // Rodada já 'finished' localmente não muda mais no chess-results — refazer
-  // o download + parse dela em TODA execução (às vezes dezenas de rodadas
-  // antigas, toda vez) era o maior custo do worker sem nenhum ganho: o
-  // resultado de uma rodada encerrada não volta atrás.
+  // Rodada já 'finished' localmente quase nunca muda no chess-results — refazer o
+  // download + parse de TODAS em toda execução (às vezes dezenas de rodadas) era o
+  // maior custo do worker. Mas muda de vez em quando (correção de resultado pela
+  // arbitragem), então: as 2 últimas são relidas sempre e as demais 1x por hora.
   let finishedRoundsQuery = supabase
     .from('rounds')
     .select('round_number')
@@ -195,9 +195,16 @@ export async function processImport(
     // A última rodada divulgada é revista mesmo estando 'finished': o árbitro pode
     // refazer o emparceiramento (às vezes mais de uma vez) e antes a rodada nunca
     // mais era relida. importPairings só regrava se o conteúdo mudou e reabre a
-    // rodada quando voltam mesas sem resultado. Rodadas anteriores seguem puladas.
+    // rodada quando voltam mesas sem resultado. As anteriores seguem a regra de revisão abaixo.
     const alreadyFinished = finishedRounds.has(rd);
-    if (alreadyFinished && rd !== maxRound) {
+    // O árbitro também corrige RESULTADO de rodada já encerrada (ex.: 1-0 virou 0-1 na R3 e
+    // o banco ficou com a mesa invertida, a pontuação certa e vitórias/derrotas erradas).
+    // Por isso as 2 últimas rodadas são revistas em toda execução, e todas as encerradas uma
+    // vez por hora (nos primeiros minutos de cada hora UTC). A revisão é barata: importPairings
+    // só regrava a mesa que mudou.
+    const recentRound = rd >= maxRound - 1;
+    const hourlyDeepCheck = new Date().getUTCMinutes() < 3;
+    if (alreadyFinished && !recentRound && !hourlyDeepCheck) {
       skippedFinishedRounds++;
       continue;
     }
