@@ -1,7 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { createSupabase } from './supabase.js';
 import { processImport } from './process-tournament.js';
-import { notifyTournamentSummary } from './notify.js';
+import { notifyTournamentSummary, notifyImportStatus } from './notify.js';
 
 interface ImportRow {
   id: string;
@@ -9,6 +9,9 @@ interface ImportRow {
   base_url: string;
   pairing_group_name: string | null;
   enabled: boolean;
+  /** Estado da execução anterior — pra avisar o dev só quando muda. */
+  last_status: string | null;
+  last_message: string | null;
   tournaments: {
     status: string;
     start_date: string | null;
@@ -121,7 +124,7 @@ async function main() {
     // 'ongoing' que o organizador edita a lista de participantes.
     const { data, error } = await supabase
       .from('tournament_imports')
-      .select('id, tournament_id, base_url, pairing_group_name, enabled, tournaments!inner(status, start_date, end_date)')
+      .select('id, tournament_id, base_url, pairing_group_name, enabled, last_status, last_message, tournaments!inner(status, start_date, end_date)')
       .eq('enabled', true)
       .not('tournaments.status', 'in', '(finished,cancelled)');
 
@@ -152,6 +155,9 @@ async function main() {
           .eq('id', row.id);
         console.log(`${label} ok — ${summary}`);
         okCount++;
+        if (row.last_status === 'error') {
+          await notifyImportStatus({ tournamentId: row.tournament_id, groupName: row.pairing_group_name, status: 'recovered' });
+        }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         await supabase
@@ -164,6 +170,10 @@ async function main() {
           .eq('id', row.id);
         console.error(`${label} ERRO — ${message}`);
         errCount++;
+        // Avisa o dev quando quebra, ou quando o motivo do erro muda — não a cada 2 minutos.
+        if (row.last_status !== 'error' || (row.last_message ?? '') !== message.slice(0, 500)) {
+          await notifyImportStatus({ tournamentId: row.tournament_id, groupName: row.pairing_group_name, status: 'error', message });
+        }
       } finally {
         await refreshLock(supabase);
       }

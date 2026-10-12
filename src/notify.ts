@@ -39,3 +39,32 @@ export async function notifyRoundPublished(roundId: string): Promise<void> {
 export async function notifyTournamentSummary(tournamentId: string): Promise<void> {
   await notifyImportEvents({ tournamentId });
 }
+
+/**
+ * Avisa o dev (push no app) que a sincronização de um torneio quebrou ou voltou a funcionar.
+ * Chamado só na MUDANÇA de estado (ou quando o motivo do erro muda) — ver index.ts — pra não
+ * mandar um push a cada execução de 2 minutos.
+ */
+export async function notifyImportStatus(payload: {
+  tournamentId: string;
+  groupName: string | null;
+  status: 'error' | 'recovered';
+  message?: string;
+}): Promise<void> {
+  const base = process.env.CHESS_VIEWER_URL;
+  const secret = process.env.CRON_PUSH_SECRET;
+  if (!base || !secret) {
+    console.warn('[notify] CHESS_VIEWER_URL/CRON_PUSH_SECRET ausente — aviso de status pulado');
+    return;
+  }
+  try {
+    const res = await fetch(`${base.replace(/\/$/, '')}/api/internal/import-status`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-cron-secret': secret },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) console.error(`[notify] aviso de status falhou (${res.status})`);
+  } catch (e) {
+    console.error('[notify] aviso de status — erro de rede:', (e as Error).message);
+  }
+}
