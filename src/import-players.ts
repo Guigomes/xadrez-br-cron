@@ -9,6 +9,13 @@ import {
   colIndex,
 } from './normalize.js';
 
+/** "w"/"f" → feminino, "m" → masculino; vazio ou outro valor → sem informação. */
+function parseSex(raw: string | undefined): 'm' | 'w' | undefined {
+  const v = (raw ?? '').trim().toLowerCase();
+  if (v === 'w' || v === 'f') return 'w';
+  if (v === 'm') return 'm';
+  return undefined;
+}
 interface ImportedParticipant {
   fullName: string;
   sourceName: string;
@@ -22,6 +29,8 @@ interface ImportedParticipant {
   category?: string;
   state?: string;
   clubOrSchool?: string;
+  /** Coluna "sexo" do chess-results: "w" = feminino. Vazio não diz nada (não vira 'm'). */
+  sex?: 'm' | 'w';
 }
 
 const BR_STATE_CODES = new Set([
@@ -69,6 +78,7 @@ function parseRows(rows: unknown[][]): ImportedParticipant[] {
   const typeIdx = colIndex(headers, ['tipo']);
   const stateIdx = colIndex(headers, ['gr', 'uf', 'estado', 'state']);
   const clubIdx = colIndex(headers, ['clube/cidade', 'clube / cidade', 'clube cidade']);
+  const sexIdx = colIndex(headers, ['sexo', 'sex']);
   // Título (CM, AFM, WCM, GM...) vem numa coluna SEM cabeçalho, sempre logo
   // antes de "Nome" — visto ao vivo num torneio (tnr1485382): header
   // ["Nº.", "", "Nome", "EloI", "EloN", "sexo", "Tipo"]. Só assume essa
@@ -102,6 +112,7 @@ function parseRows(rows: unknown[][]): ImportedParticipant[] {
       category: typeIdx >= 0 && row[typeIdx] ? canonicalCategoryName(row[typeIdx]) : undefined,
       state: BR_STATE_CODES.has(rawState) ? rawState : undefined,
       clubOrSchool: clubIdx >= 0 ? row[clubIdx] || undefined : undefined,
+      sex: parseSex(sexIdx >= 0 ? row[sexIdx] : ''),
     });
   }
 
@@ -276,6 +287,10 @@ export async function importPlayers(
   let collided = 0;
   let byCbx = 0;
   let cbxMismatch = 0;
+
+  // Sexo vindo da planilha, gravado em lote no fim (2 consultas por execução, não 1 por jogador).
+  const sexW: string[] = [];
+  const sexM: string[] = [];
 
   for (const p of participants) {
     try {
@@ -538,6 +553,7 @@ export async function importPlayers(
       }
 
       seenPlayerIds.add(playerId);
+      if (p.sex) (p.sex === 'w' ? sexW : sexM).push(playerId);
 
       if (existingPlayerIds.has(playerId)) {
         // Player already in this group — sync ranking and category in case they changed.
@@ -596,6 +612,19 @@ export async function importPlayers(
       console.warn(`Participantes obsoletos preservados: ${removeError.message}`);
     } else {
       removed = tpIdsToRemove.length;
+    }
+  }
+
+  // Só preenche cadastro sem sexo: o players é global (vale para todos os torneios do jogador)
+  // e não sobrescreve o que o organizador ou outra fonte já gravou.
+  for (const [sex, ids] of [['w', sexW], ['m', sexM]] as const) {
+    for (let i = 0; i < ids.length; i += 200) {
+      const { error: sexError } = await supabase
+        .from('players')
+        .update({ sex })
+        .in('id', ids.slice(i, i + 200))
+        .is('sex', null);
+      if (sexError) console.warn(`Sexo dos jogadores não gravado: ${sexError.message}`);
     }
   }
 
