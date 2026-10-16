@@ -97,11 +97,23 @@ async function computeGameCounts(
   supabase: SupabaseClient,
   tournamentId: string,
 ): Promise<Map<string, GameCounts>> {
-  const { data } = await supabase
-    .from('pairings')
-    .select('white_tp_id, black_tp_id, result, is_bye')
-    .eq('tournament_id', tournamentId)
-    .neq('result', '*');
+  // Paginado: o PostgREST devolve no máximo 1000 linhas por consulta. Torneio grande
+  // (o Mundial FIDE tem ~1900 pareamentos nas 12 seções) ficava com V/E/D zerado para
+  // quem caía fora das primeiras 1000 linhas.
+  const data: { white_tp_id: string | null; black_tp_id: string | null; result: string; is_bye: boolean }[] = [];
+  const PAGE = 1000;
+  for (let from = 0; ; from += PAGE) {
+    const { data: page, error } = await supabase
+      .from('pairings')
+      .select('id, white_tp_id, black_tp_id, result, is_bye')
+      .eq('tournament_id', tournamentId)
+      .neq('result', '*')
+      .order('id')
+      .range(from, from + PAGE - 1);
+    if (error) throw new Error(error.message);
+    data.push(...(page ?? []));
+    if (!page || page.length < PAGE) break;
+  }
 
   const counts = new Map<string, GameCounts>();
   const bump = (tpId: string | null, field: keyof GameCounts) => {
