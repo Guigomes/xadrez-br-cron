@@ -13,6 +13,16 @@ import { importPairings } from './import-pairings.js';
 import { importStandings } from './import-standings.js';
 import { importPgns } from './import-pgns.js';
 import { notifyRoundPublished } from './notify.js';
+import {
+  isInfo64Url,
+  parseInfo64Url,
+  info64Pages,
+  isGirlsSection,
+  playersSheet,
+  pairingsSheet,
+  standingsSheet,
+  totalRoundsFromMenu,
+} from './info64.js';
 
 interface ImportRow {
   id: string;
@@ -97,6 +107,90 @@ async function maybeImportPgns(
   }
 }
 
+/**
+ * Torneio publicado no info64.org (ver info64.ts). Mesmo fluxo do chess-results —
+ * jogadores, rodadas, classificação, avisos — com as páginas do info64 convertidas
+ * para o layout de planilha que os importadores já leem. PGN ainda não: o info64
+ * só expõe as partidas por busca, sem um arquivo por rodada.
+ */
+async function processInfo64Import(
+  supabase: SupabaseClient,
+  row: ImportRow,
+  pairingGroupId: string | null,
+): Promise<string> {
+  const src = parseInfo64Url(row.base_url);
+  const sectionHtml = await info64Pages.section(src);
+  const playersResult = await importPlayers(
+    supabase,
+    row.tournament_id,
+    playersSheet(sectionHtml, { girlsSection: isGirlsSection(src) }),
+    pairingGroupId,
+    true,
+  );
+
+  // Mesma regra de revisão do chess-results: rodadas encerradas só são relidas se
+  // estiverem entre as 2 últimas, ou uma vez por hora.
+  let roundsQuery = supabase.from('rounds').select('round_number, status').eq('tournament_id', row.tournament_id);
+  roundsQuery = pairingGroupId ? roundsQuery.eq('pairing_group_id', pairingGroupId) : roundsQuery.is('pairing_group_id', null);
+  const { data: knownRounds } = await roundsQuery;
+  const finishedRounds = new Set((knownRounds ?? []).filter((r) => r.status === 'finished').map((r) => r.round_number as number));
+  const knownMax = Math.max(0, ...(knownRounds ?? []).map((r) => r.round_number as number));
+  const hourlyDeepCheck = new Date().getUTCMinutes() < 3;
+
+  const totalRounds = totalRoundsFromMenu(sectionHtml, src);
+  let maxRound = 0;
+  let completedRound = 0;
+  let totalPairings = 0;
+  let totalPairingsUnmatched = 0;
+  let skippedFinishedRounds = 0;
+  const roundsToNotify = new Set<string>();
+  for (let rd = 1; rd <= totalRounds; rd++) {
+    const alreadyFinished = finishedRounds.has(rd);
+    if (alreadyFinished && rd < knownMax - 1 && !hourlyDeepCheck) {
+      skippedFinishedRounds++;
+      maxRound = rd;
+      completedRound = rd;
+      continue;
+    }
+    const page = pairingsSheet(await info64Pages.round(src, rd), rd);
+    if (!page) break; // rodada ainda não pareada: as seguintes também não estão
+    maxRound = rd;
+    if (page.open === 0) completedRound = rd;
+    try {
+      const r = await importPairings(supabase, row.tournament_id, page.sheet, pairingGroupId);
+      totalPairings += r.imported;
+      totalPairingsUnmatched += r.unmatched;
+      if (r.roundId && (!alreadyFinished || r.published)) roundsToNotify.add(r.roundId);
+    } catch (err) {
+      console.warn(`[${row.id}] info64 rodada ${rd} falhou: ${(err as Error).message}`);
+    }
+  }
+
+  const { error: roundsCountError } = await supabase
+    .from('tournament_imports')
+    .update({ discovered_rounds_count: maxRound })
+    .eq('id', row.id);
+  if (roundsCountError) throw new Error(roundsCountError.message);
+
+  const standingsResult = await importStandings(
+    supabase,
+    row.tournament_id,
+    standingsSheet(await info64Pages.standings(src), completedRound),
+    pairingGroupId,
+  );
+
+  for (const roundId of roundsToNotify) {
+    await notifyRoundPublished(roundId);
+  }
+
+  const perdidos = playersResult.collided + playersResult.failed;
+  return [
+    `info64 · jogadores: ${playersResult.added}+${playersResult.reused} (criados ${playersResult.created}${playersResult.removed > 0 ? `, removidos ${playersResult.removed}` : ''}${perdidos > 0 ? `, NÃO IMPORTADOS ${perdidos}` : ''})`,
+    `rodadas 1..${maxRound} de ${totalRounds}: ${totalPairings} pareamentos${totalPairingsUnmatched > 0 ? ` (${totalPairingsUnmatched} não identificados)` : ''}${skippedFinishedRounds > 0 ? ` · ${skippedFinishedRounds} já encerradas, puladas` : ''}`,
+    `classificação: ${standingsResult.matched} jogadores`,
+  ].join(' · ');
+}
+
 export async function processImport(
   supabase: SupabaseClient,
   row: ImportRow,
@@ -112,12 +206,14 @@ export async function processImport(
     throw new Error('torneio nativo — importação bloqueada (desabilite esta linha de import)');
   }
 
-  const info = parseBaseUrl(row.base_url);
   const pairingGroupId = await resolvePairingGroupId(
     supabase,
     row.tournament_id,
     row.pairing_group_name,
   );
+  if (isInfo64Url(row.base_url)) return processInfo64Import(supabase, row, pairingGroupId);
+
+  const info = parseBaseUrl(row.base_url);
 
   // 1. Players (art=0 com SNode preservado para filtrar o grupo correto)
   // Usamos fetchExcelDirect em vez de fetchExcelFromPage porque o link Excel
