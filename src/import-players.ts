@@ -31,6 +31,8 @@ interface ImportedParticipant {
   clubOrSchool?: string;
   /** Coluna "sexo" do chess-results: "w" = feminino. Vazio não diz nada (não vira 'm'). */
   sex?: 'm' | 'w';
+  /** Nome no formato FIDE ("Sobrenome, Nome"), quando a fonte traz — ver players.fide_name. */
+  fideName?: string;
 }
 
 const BR_STATE_CODES = new Set([
@@ -79,6 +81,8 @@ function parseRows(rows: unknown[][]): ImportedParticipant[] {
   const stateIdx = colIndex(headers, ['gr', 'uf', 'estado', 'state']);
   const clubIdx = colIndex(headers, ['clube/cidade', 'clube / cidade', 'clube cidade']);
   const sexIdx = colIndex(headers, ['sexo', 'sex']);
+  // Coluna opcional: só as fontes em que a vírgula do nome é confiável (info64) a trazem.
+  const fideNameIdx = colIndex(headers, ['nome fide']);
   // Título (CM, AFM, WCM, GM...) vem numa coluna SEM cabeçalho, sempre logo
   // antes de "Nome" — visto ao vivo num torneio (tnr1485382): header
   // ["Nº.", "", "Nome", "EloI", "EloN", "sexo", "Tipo"]. Só assume essa
@@ -113,6 +117,7 @@ function parseRows(rows: unknown[][]): ImportedParticipant[] {
       state: BR_STATE_CODES.has(rawState) ? rawState : undefined,
       clubOrSchool: clubIdx >= 0 ? row[clubIdx] || undefined : undefined,
       sex: parseSex(sexIdx >= 0 ? row[sexIdx] : ''),
+      fideName: fideNameIdx >= 0 ? row[fideNameIdx] || undefined : undefined,
     });
   }
 
@@ -361,6 +366,7 @@ export async function importPlayers(
                 club_or_school: p.clubOrSchool,
                 rating_std: p.ratingStd,
                 federation: p.federation,
+                ...(p.fideName ? { fide_name: p.fideName } : {}),
                 title: p.title,
               })
               .eq('id', playerId);
@@ -393,6 +399,7 @@ export async function importPlayers(
                 club_or_school: p.clubOrSchool,
                 rating_std: p.ratingStd,
                 federation: p.federation,
+                ...(p.fideName ? { fide_name: p.fideName } : {}),
                 title: p.title,
                 ...(cbxId && !match.cbx_id ? { cbx_id: cbxId } : {}),
               })
@@ -423,7 +430,7 @@ export async function importPlayers(
           if (stored !== p.fullName || (p.title && p.title !== storedTitle) || p.state || p.clubOrSchool || p.ratingStd || p.federation) {
             await supabase
               .from('players')
-              .update({ full_name: p.fullName, title: p.title, state: p.state, club_or_school: p.clubOrSchool, rating_std: p.ratingStd, federation: p.federation })
+              .update({ full_name: p.fullName, title: p.title, state: p.state, club_or_school: p.clubOrSchool, rating_std: p.ratingStd, federation: p.federation, ...(p.fideName ? { fide_name: p.fideName } : {}) })
               .eq('id', playerId);
           }
         } else if (candidate) {
@@ -488,6 +495,7 @@ export async function importPlayers(
                 club_or_school: p.clubOrSchool,
                 rating_std: p.ratingStd,
                 federation: p.federation,
+                ...(p.fideName ? { fide_name: p.fideName } : {}),
                 title: p.title,
               })
               .eq('id', playerId);
@@ -504,6 +512,7 @@ export async function importPlayers(
             cbx_id: cbxId,
             fide_id: fideId,
             federation: p.federation ?? 'BRA',
+            fide_name: p.fideName,
             rating_std: p.ratingStd,
             state: p.state,
             club_or_school: p.clubOrSchool,

@@ -81,6 +81,18 @@ export function totalRoundsFromMenu(html: string, s: Info64Source): number {
   return max;
 }
 
+/**
+ * "Sobrenome, Nome" (padrão de cadastro da FIDE) → "Nome Sobrenome", a ordem em que o nome
+ * é lido no Brasil. Só com exatamente uma vírgula: nomes sem vírgula (mongóis, vietnamitas —
+ * em que o sobrenome vem primeiro de fato, "Mai Ngoc Thien Vu") ficam como estão.
+ */
+export function naturalOrderName(fideName: string): string {
+  const parts = fideName.split(',');
+  if (parts.length !== 2) return fideName.replace(/\s+/g, ' ').trim();
+  const [family, given] = parts.map((p) => p.replace(/\s+/g, ' ').trim());
+  return given && family ? `${given} ${family}` : (given || family);
+}
+
 /** Ranking inicial → planilha de jogadores no layout do chess-results. */
 export function playersSheet(html: string, opts: { girlsSection: boolean }): ArrayBuffer {
   const { header, rows } = readTable(html);
@@ -88,17 +100,18 @@ export function playersSheet(html: string, opts: { girlsSection: boolean }): Arr
   const iFed = col(header, 'Fed'), iElo = col(header, 'FIDE'), iId = col(header, 'FIDE ID');
   if (iName < 0) throw new Error('info64: coluna "Name" não encontrada no ranking inicial');
   // Título numa coluna SEM cabeçalho logo antes de "Nome", como no chess-results.
-  const aoa: unknown[][] = [['Nº.', '', 'Nome', 'FED', 'Elo', 'ID FIDE', 'sexo']];
+  const aoa: unknown[][] = [['Nº.', '', 'Nome', 'FED', 'Elo', 'ID FIDE', 'sexo', 'Nome FIDE']];
   for (const r of rows) {
     const id = iId >= 0 ? r[iId] : '';
     aoa.push([
       iRank >= 0 ? r[iRank] : '',
       iTit >= 0 ? r[iTit] : '',
-      r[iName],
+      naturalOrderName(r[iName]),
       iFed >= 0 ? r[iFed] : '',
       iElo >= 0 && Number(r[iElo]) > 0 ? r[iElo] : '',
       /^\d+$/.test(id) && Number(id) > 0 ? id : '',
       opts.girlsSection ? 'w' : '',
+      r[iName].includes(',') ? r[iName] : '',
     ]);
   }
   return toXlsx(aoa);
@@ -128,6 +141,10 @@ export function pairingsSheet(html: string, round: number): { sheet: ArrayBuffer
   const iBlack = col(header, 'Black');
   const ranIdxs = header.map((h, i) => (/^ran\.?$/i.test(h) ? i : -1)).filter((i) => i >= 0);
   if (iWhite < 0 || iRes < 0 || iBlack < 0) throw new Error(`info64: colunas da rodada ${round} não reconhecidas`);
+  // Rodada futura: o info64 já lista quem pediu bye ou saiu do torneio ("0" em todas as rodadas
+  // seguintes), antes de existir pareamento. Sem nenhuma partida de verdade, a rodada não foi
+  // pareada — antes ela entrava como rodada encerrada só com "não emparceirados".
+  if (!rows.some((r) => (r[iBlack] ?? '').trim() !== '')) return null;
   const aoa: unknown[][] = [[`Round ${round}`], ['Mesa', 'Nº.', 'White', 'Resultado', 'Black', 'Nº.']];
   let open = 0;
   rows.forEach((r, idx) => {
