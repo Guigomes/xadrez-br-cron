@@ -123,10 +123,11 @@ function resultCell(raw: string): string {
   if (v === '1-0') return '1 - 0';
   if (v === '0-1') return '0 - 1';
   if (v === '½-½' || v === '1/2-1/2' || v === '0.5-0.5') return '½ - ½';
-  // W.O.: o lado presente leva "+", o ausente "-" (também aparece como 1F-0F).
-  if (v === '+-' || v === '1F-0F' || v === '1-0F') return '+ - -';
-  if (v === '-+' || v === '0F-1F' || v === '0F-1') return '- - +';
-  if (v === '--' || v === '0F-0F') return '- - -';
+  // W.O.: o lado presente leva "+", o ausente "-". No info64 vem como "+--" / "--+"
+  // (visto no Mundial, Sub-17 Feminino R2); as outras grafias ficam por garantia.
+  if (v === '+--' || v === '+-' || v === '1F-0F' || v === '1-0F') return '+ - -';
+  if (v === '--+' || v === '-+' || v === '0F-1F' || v === '0F-1') return '- - +';
+  if (v === '---' || v === '--' || v === '0F-0F') return '- - -';
   return '';
 }
 
