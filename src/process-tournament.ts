@@ -31,6 +31,29 @@ interface ImportRow {
   pairing_group_name: string | null;
 }
 
+/**
+ * Regra fixa: todo torneio importado leva na descrição o link da fonte (chess-results / info64).
+ * Descrição vazia recebe o link; descrição que o worker mesmo gerou ganha o link de cada grupo
+ * importado. Texto escrito pelo organizador nunca é tocado.
+ */
+const SOURCE_LINK_PREFIX = 'Resultados oficiais:';
+
+async function ensureSourceLink(
+  supabase: SupabaseClient,
+  row: ImportRow,
+  description: string | null,
+): Promise<void> {
+  const url = row.base_url.trim();
+  const current = (description ?? '').trim();
+  if (current.includes(url)) return;
+  if (current && !current.startsWith(SOURCE_LINK_PREFIX)) return;
+  const line = row.pairing_group_name ? `${row.pairing_group_name}: ${url}` : url;
+  const next = current ? `${current}
+${line}` : `${SOURCE_LINK_PREFIX}
+${line}`;
+  await supabase.from('tournaments').update({ description: next }).eq('id', row.tournament_id);
+}
+
 async function resolvePairingGroupId(
   supabase: SupabaseClient,
   tournamentId: string,
@@ -199,12 +222,13 @@ export async function processImport(
   // jamais deve tocá-los (sobrescreveria pareamentos gerados pela engine).
   const { data: tournament } = await supabase
     .from('tournaments')
-    .select('mode')
+    .select('mode, description')
     .eq('id', row.tournament_id)
     .single();
   if (tournament?.mode === 'native') {
     throw new Error('torneio nativo — importação bloqueada (desabilite esta linha de import)');
   }
+  await ensureSourceLink(supabase, row, tournament?.description ?? null);
 
   const pairingGroupId = await resolvePairingGroupId(
     supabase,
