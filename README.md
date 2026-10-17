@@ -82,13 +82,13 @@ gcloud run jobs update chess-viewer-cron-import \
   --region=southamerica-east1
 ```
 
-### 3. Cloud Scheduler (disparo a cada 5 minutos)
+### 3. Cloud Scheduler (disparo a cada 5 minutos, das 9h às 22h)
 
 ```sh
 gcloud scheduler jobs create http chess-viewer-cron-import-trigger \
   --location=southamerica-east1 \
-  --schedule="*/5 * * * *" \
-  --time-zone="America/Sao_Paulo" \
+  --schedule="*/5 9-21 * * *" \
+  --time-zone="America/Campo_Grande" \
   --uri="https://southamerica-east1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/<PROJECT_ID>/jobs/chess-viewer-cron-import:run" \
   --http-method=POST \
   --oauth-service-account-email=<SCHEDULER_SA>@<PROJECT_ID>.iam.gserviceaccount.com
