@@ -68,3 +68,26 @@ export async function notifyImportStatus(payload: {
     console.error('[notify] aviso de status — erro de rede:', (e as Error).message);
   }
 }
+
+/**
+ * Dispara a rodada diária dos alertas de torneio no app (espelho do calendário da
+ * CBX + avisos por regra). A rota se auto-limita a uma execução por dia, então
+ * chamar a cada ciclo de 2 minutos é barato: quase sempre volta "skipped".
+ */
+export async function triggerTournamentAlerts(): Promise<void> {
+  const base = process.env.CHESS_VIEWER_URL;
+  const secret = process.env.CRON_PUSH_SECRET;
+  if (!base || !secret) return;
+  try {
+    const res = await fetch(`${base.replace(/\/$/, '')}/api/internal/tournament-alerts`, {
+      method: 'POST',
+      headers: { 'x-cron-secret': secret },
+      signal: AbortSignal.timeout(90_000),
+    });
+    const body = (await res.json().catch(() => ({}))) as { skipped?: string };
+    if (!res.ok) console.error(`[alerts] falhou (${res.status}):`, JSON.stringify(body));
+    else if (!body.skipped) console.log('[alerts]', JSON.stringify(body));
+  } catch (e) {
+    console.error('[alerts] erro de rede:', (e as Error).message);
+  }
+}

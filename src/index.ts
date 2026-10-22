@@ -1,7 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { createSupabase } from './supabase.js';
 import { processImport } from './process-tournament.js';
-import { notifyTournamentSummary, notifyImportStatus } from './notify.js';
+import { notifyTournamentSummary, notifyImportStatus, triggerTournamentAlerts } from './notify.js';
 
 interface ImportRow {
   id: string;
@@ -186,6 +186,9 @@ async function main() {
     }
 
     console.log(`Concluído. ${okCount} ok, ${errCount} com erro.`);
+
+    // Alertas de torneio do app: a rota decide se já é hora (uma vez por dia).
+    await triggerTournamentAlerts();
   } finally {
     clearInterval(heartbeat);
     await releaseLock(supabase);
