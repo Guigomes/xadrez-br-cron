@@ -60,7 +60,7 @@ function namesShareWords(a: string, b: string): boolean {
   return shared >= Math.min(2, A.length, B.size);
 }
 
-function parseRows(rows: unknown[][]): ImportedParticipant[] {
+export function parseRows(rows: unknown[][]): ImportedParticipant[] {
   const asStr = rows.map((row) => row.map((c) => String(c ?? '').trim()));
 
   const headerIdx = asStr.findIndex(

@@ -12,6 +12,8 @@ interface ImportRow {
   /** Estado da execução anterior — pra avisar o dev só quando muda. */
   last_status: string | null;
   last_message: string | null;
+  /** Pedido de sincronização imediata feito pelo botão do admin no site. */
+  force_requested_at: string | null;
   tournaments: {
     status: string;
     start_date: string | null;
@@ -66,6 +68,10 @@ function sortImports(rows: ImportRow[]): ImportRow[] {
   const statusPriority = (status: string) => status === 'ongoing' ? 0 : 1;
 
   return [...rows].sort((a, b) => {
+    // Pedido do admin ("forçar sincronização") passa na frente de tudo.
+    const byForce = Number(!!b.force_requested_at) - Number(!!a.force_requested_at);
+    if (byForce !== 0) return byForce;
+
     const byStatus = statusPriority(a.tournaments.status) - statusPriority(b.tournaments.status);
     if (byStatus !== 0) return byStatus;
 
@@ -122,19 +128,34 @@ async function main() {
     // continuar gastando execução com ele. draft/published/registration/
     // registration_closed/ongoing continuam entrando: é justamente antes de
     // 'ongoing' que o organizador edita a lista de participantes.
-    const { data, error } = await supabase
-      .from('tournament_imports')
-      .select('id, tournament_id, base_url, pairing_group_name, enabled, last_status, last_message, tournaments!inner(status, start_date, end_date)')
-      .eq('enabled', true)
-      .not('tournaments.status', 'in', '(finished,cancelled)');
+    const columns = 'id, tournament_id, base_url, pairing_group_name, enabled, last_status, last_message, force_requested_at, tournaments!inner(status, start_date, end_date)';
+    const [scheduled, forced] = await Promise.all([
+      supabase
+        .from('tournament_imports')
+        .select(columns)
+        .eq('enabled', true)
+        .not('tournaments.status', 'in', '(finished,cancelled)'),
+      // Pedido do admin vale mesmo desligado ou com o torneio encerrado: é
+      // justamente o caso de uma importação única de torneio que já aconteceu.
+      supabase
+        .from('tournament_imports')
+        .select(columns)
+        .not('force_requested_at', 'is', null),
+    ]);
 
+    const error = scheduled.error ?? forced.error;
     if (error) {
       console.error('Falha ao listar imports:', error.message);
       process.exit(1);
     }
 
-    const rows = sortImports((data ?? []) as unknown as ImportRow[]);
-    console.log(`Processando ${rows.length} importação(ões) habilitada(s), concorrência ${IMPORT_CONCURRENCY}`);
+    const byId = new Map<string, ImportRow>();
+    for (const row of [...((scheduled.data ?? []) as unknown as ImportRow[]), ...((forced.data ?? []) as unknown as ImportRow[])]) {
+      byId.set(row.id, row);
+    }
+    const rows = sortImports([...byId.values()]);
+    const forcedCount = rows.filter((row) => row.force_requested_at).length;
+    console.log(`Processando ${rows.length} importação(ões) (${forcedCount} pedida(s) pelo admin), concorrência ${IMPORT_CONCURRENCY}`);
 
     let okCount = 0;
     let errCount = 0;
@@ -175,6 +196,15 @@ async function main() {
           await notifyImportStatus({ tournamentId: row.tournament_id, groupName: row.pairing_group_name, status: 'error', message });
         }
       } finally {
+        // Atende o pedido do admin — só os feitos ANTES desta execução começar:
+        // um clique durante o processamento continua valendo para a próxima.
+        if (row.force_requested_at) {
+          await supabase
+            .from('tournament_imports')
+            .update({ force_requested_at: null })
+            .eq('id', row.id)
+            .lte('force_requested_at', startedAt);
+        }
         await refreshLock(supabase);
       }
     });
