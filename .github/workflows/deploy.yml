@@ -5,7 +5,27 @@ on:
     branches: [master]
 
 jobs:
+  # Barreira antes de publicar o robô: tipos e testes precisam passar.
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Tipos
+        run: npm run typecheck
+
+      - name: Testes
+        run: npm test
+
   deploy:
+    needs: check
     runs-on: ubuntu-latest
 
     steps:
