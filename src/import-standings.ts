@@ -219,19 +219,13 @@ export async function importStandings(
     .upsert(upsertRows, { onConflict: 'tournament_id,tournament_player_id' });
   if (error) throw new Error(error.message);
 
-  // Sync tournament_players denormalized fields
-  for (const { tournament_player_id, row } of matched) {
-    await supabase
-      .from('tournament_players')
-      .update({
-        current_score: row.points,
-        current_rank: row.rank,
-        buchholz: row.buchholz,
-        buchholz_cut1: row.buchholzCut1,
-        sonneborn_berger: row.sonnebornBerger,
-      })
-      .eq('id', tournament_player_id);
-  }
+  // Copia nota, posição e desempates de standings (fonte) para tournament_players num
+  // UPDATE só, no banco. Antes era um UPDATE por jogador: centenas de idas ao banco a
+  // cada ciclo em torneio grande. Nunca escrever esses campos direto em tournament_players.
+  const { error: syncError } = await supabase.rpc('sync_player_scores_from_standings', {
+    p_tournament_id: tournamentId,
+  });
+  if (syncError) throw new Error(`sync_player_scores_from_standings: ${syncError.message}`);
 
   // Close all ongoing rounds that are known to be complete.
   // The Excel title "Classificação após a ronda N" tells us up to which round results exist.
