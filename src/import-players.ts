@@ -175,6 +175,8 @@ export async function importPlayers(
   repairGroups = true,
   /** Torneio de origem: permite buscar o ID CBX na ficha do jogador quando a lista não traz. */
   source?: { origin: string; tnr: string; snode: string | null },
+  /** false: ignora a coluna "Tipo" da fonte — sem criar nem atribuir categoria. */
+  importCategories = true,
 ): Promise<ImportPlayersResult> {
   const workbook = XLSX.read(fileBuffer, { type: 'array' });
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
@@ -301,7 +303,7 @@ export async function importPlayers(
     try {
       let categoryId: string | undefined;
 
-      if (p.category) {
+      if (p.category && importCategories) {
         const normCat = normalize(p.category);
         if (categoryMap.has(normCat)) {
           categoryId = categoryMap.get(normCat);

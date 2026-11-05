@@ -8,6 +8,8 @@ interface ImportRow {
   tournament_id: string;
   base_url: string;
   pairing_group_name: string | null;
+  /** false: ignora a coluna "Tipo" da fonte (sem categoria). */
+  import_source_categories?: boolean;
   enabled: boolean;
   /** Estado da execução anterior — pra avisar o dev só quando muda. */
   last_status: string | null;
@@ -128,7 +130,7 @@ async function main() {
     // continuar gastando execução com ele. draft/published/registration/
     // registration_closed/ongoing continuam entrando: é justamente antes de
     // 'ongoing' que o organizador edita a lista de participantes.
-    const columns = 'id, tournament_id, base_url, pairing_group_name, enabled, last_status, last_message, force_requested_at, tournaments!inner(status, start_date, end_date)';
+    const columns = 'id, tournament_id, base_url, pairing_group_name, import_source_categories, enabled, last_status, last_message, force_requested_at, tournaments!inner(status, start_date, end_date)';
     const [scheduled, forced] = await Promise.all([
       supabase
         .from('tournament_imports')

@@ -29,6 +29,7 @@ interface ImportRow {
   tournament_id: string;
   base_url: string;
   pairing_group_name: string | null;
+  import_source_categories?: boolean;
 }
 
 /**
@@ -149,6 +150,8 @@ async function processInfo64Import(
     playersSheet(sectionHtml, { girlsSection: isGirlsSection(src) }),
     pairingGroupId,
     true,
+    undefined,
+    row.import_source_categories !== false,
   );
 
   // Mesma regra de revisão do chess-results: rodadas encerradas só são relidas se
@@ -251,6 +254,7 @@ export async function processImport(
     pairingGroupId,
     true,
     { origin: new URL(info.href).origin, tnr: info.tnr, snode: info.snode },
+    row.import_source_categories !== false,
   );
 
   // 2. Discover round count from standings (art=1) AND pairings index (art=2).
