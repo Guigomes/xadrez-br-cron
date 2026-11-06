@@ -67,6 +67,12 @@ export function parseRows(rows: unknown[][]): ImportedParticipant[] {
     (row) => row.some((c) => normalize(c) === 'nome'),
   );
   if (headerIdx < 0) {
+    // Torneio ainda sem inscritos: o chess-results exporta só o cabeçalho do
+    // site (título, "Ranking inicial", links), sem tabela nenhuma. Isso é
+    // "aguardando", não erro. Uma tabela SEM a coluna "Nome" continua sendo
+    // erro: aí a fonte mudou de formato e alguém precisa olhar.
+    const hasTable = asStr.some((row) => row.filter(Boolean).length >= 3);
+    if (!hasTable) return [];
     throw new Error('Cabeçalho do padrão Chess-Results não encontrado (coluna "Nome" ausente).');
   }
 

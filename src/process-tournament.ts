@@ -257,6 +257,13 @@ export async function processImport(
     row.import_source_categories !== false,
   );
 
+  // Fonte ainda sem nenhum inscrito (torneio anunciado, lista vazia): não há
+  // rodada nem classificação para buscar. Conta como sucesso com aviso, em vez
+  // de erro repetido a cada ciclo e push de "quebrou" para o dev.
+  if (playersResult.total === 0) {
+    return 'aguardando inscritos na fonte (lista de jogadores vazia)';
+  }
+
   // 2. Discover round count from standings (art=1) AND pairings index (art=2).
   // When only pairings have been published (no results yet), art=1 has no rd= links
   // so we must also check art=2 to detect the first round.

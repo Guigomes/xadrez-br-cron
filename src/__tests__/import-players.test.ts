@@ -53,3 +53,27 @@ describe('parseRows do Chess-Results', () => {
     );
   });
 });
+
+describe('lista de jogadores vazia na fonte', () => {
+  it('torneio sem inscritos (só o cabeçalho do site) devolve lista vazia, não erro', () => {
+    const rows = [
+      ['Da base de dados do torneio do Chess-Results https://chess-results.com'],
+      ['124ª etapa CSX - Araras- Torneio Aberto '],
+      ['Última Atualização29.09.2026 16:42:01'],
+      ['Ranking inicial'],
+      [''],
+      ['Encontrará todos os detalhes do torneio em https://chess-results.com/tnr1507824.aspx?lan=10'],
+      ['Servidor de resultados de xadrez Chess-Results'],
+    ];
+    assert.deepEqual(parseRows(rows), []);
+  });
+
+  it('tabela sem a coluna "Nome" continua sendo erro (a fonte mudou de formato)', () => {
+    const rows = [
+      ['Ranking inicial'],
+      ['Nº.', 'Jogador', 'ID FIDE', 'EloN'],
+      ['1', 'Maria Silva', '123456', '1800'],
+    ];
+    assert.throws(() => parseRows(rows), /coluna "Nome" ausente/);
+  });
+});
