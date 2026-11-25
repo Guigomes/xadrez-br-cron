@@ -40,6 +40,16 @@ interface ImportRow {
  */
 const SOURCE_LINK_PREFIX = 'Resultados oficiais:';
 
+function sameSourceSite(text: string, url: string): boolean {
+  let host: string;
+  try {
+    host = new URL(url).hostname.replace(/^s\d+\./, '').replace(/^www\./, '');
+  } catch {
+    return false;
+  }
+  return text.toLowerCase().includes(host.toLowerCase());
+}
+
 async function ensureSourceLink(
   supabase: SupabaseClient,
   row: ImportRow,
@@ -49,10 +59,14 @@ async function ensureSourceLink(
   const current = (description ?? '').trim();
   if (current.includes(url)) return;
   if (current && !current.startsWith(SOURCE_LINK_PREFIX)) return;
-  const line = row.pairing_group_name ? `${row.pairing_group_name}: ${url}` : url;
+  // Um link por fonte basta: no chess-results a página de uma categoria leva a
+  // todas as outras do mesmo evento (pedido do dono, 2026-11-25). Se a descrição
+  // gerada já tem link desse site, não acrescenta o das outras categorias.
+  if (sameSourceSite(current, url)) return;
+  // Sem rótulo de grupo: o link único representa o evento inteiro.
   const next = current ? `${current}
-${line}` : `${SOURCE_LINK_PREFIX}
-${line}`;
+${url}` : `${SOURCE_LINK_PREFIX}
+${url}`;
   await supabase.from('tournaments').update({ description: next }).eq('id', row.tournament_id);
 }
 
