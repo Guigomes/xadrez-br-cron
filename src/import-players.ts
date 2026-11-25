@@ -163,7 +163,9 @@ export interface ImportPlayersResult {
  * jogador (art=9) traz o "Ident-Number", que nos torneios brasileiros é o ID CBX. Uma requisição por
  * jogador, então só para quem ainda não está no grupo e com teto por execução.
  */
-const MAX_IDENT_LOOKUPS_PER_RUN = 40;
+// IDENT_LOOKUPS_PER_RUN (env) sobe o teto numa importação inicial feita à mão: com o teto de 40,
+// quem passa do limite entra sem CBX na 1ª execução e nunca mais é consultado (já está no grupo).
+const MAX_IDENT_LOOKUPS_PER_RUN = Number(process.env.IDENT_LOOKUPS_PER_RUN) || 40;
 
 async function fetchIdentNumber(origin: string, tnr: string, snr: number, snode: string | null): Promise<string | undefined> {
   try {

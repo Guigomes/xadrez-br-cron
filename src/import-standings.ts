@@ -17,7 +17,23 @@ interface ParsedExcel {
   completedRound: number | null;
 }
 
-function parseExcel(buffer: ArrayBuffer): ParsedExcel {
+/**
+ * Legenda dos desempates da página de classificação (HTML, art=1):
+ * "Desempate 1: points (game-points)", "Tie Break2: Buchholz ...". Número → descrição.
+ * Algumas fontes não têm a coluna "Pts." e põem os pontos como desempate 1
+ * (II Etapa do Festival Estadual da Criança MS 2026, tnr1409352): só a legenda diz isso.
+ */
+export function parseTiebreakLegend(html: string): Map<number, string> {
+  const text = html.replace(/<[^>]+>/g, '\n').replace(/&nbsp;/g, ' ');
+  const legend = new Map<number, string>();
+  for (const m of text.matchAll(/(?:Desempate|Tie[ -]?Break|Feinwertung)\s*(\d+)\s*:\s*([^\n]+)/gi)) {
+    const n = parseInt(m[1], 10);
+    if (!legend.has(n)) legend.set(n, m[2].trim());
+  }
+  return legend;
+}
+
+function parseExcel(buffer: ArrayBuffer, legend?: Map<number, string>): ParsedExcel {
   const workbook = XLSX.read(buffer, { type: 'array' });
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
   const raw = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: null });
@@ -45,14 +61,33 @@ function parseExcel(buffer: ArrayBuffer): ParsedExcel {
   // "Nº.Inic.", "Nr", "No." etc.
   const colNr = headerCells.findIndex((h) => /^n[rº°]/i.test(h) && !/^nome/i.test(h));
   // "Pts. " (trailing space), "Pts.", "Pontos", "Punkte"
-  const colPts = headerCells.findIndex((h) => /^pts\.?\s*$/i.test(h) || /^pontos$/i.test(h) || /^punkte$/i.test(h));
+  let colPts = headerCells.findIndex((h) => /^pts\.?\s*$/i.test(h) || /^pontos$/i.test(h) || /^punkte$/i.test(h));
   const colName = headerCells.findIndex((h) => /^nome$/i.test(h) || /^name$/i.test(h));
   // "Desp1", "Des1", "Des 1", "TB1", "Dp1" etc.
-  const tbCols = headerCells
+  const tbHeader = (h: string) => /^(des|tb|dp)/i.test(h) && /\d/.test(h);
+  const tbNumber = (h: string) => parseInt(h.replace(/\D+/g, ''), 10);
+  // Sem coluna de pontos: a legenda diz qual desempate é a pontuação.
+  const legendCol = (re: RegExp) => {
+    for (const [n, desc] of legend ?? []) {
+      if (!re.test(desc)) continue;
+      const i = headerCells.findIndex((h) => tbHeader(h) && tbNumber(h) === n);
+      if (i >= 0) return i;
+    }
+    return -1;
+  };
+  if (colPts === -1) colPts = legendCol(/^(points|pontos|punkte)\b/i);
+  let tbCols = headerCells
     .map((h, i) => ({ h, i }))
-    .filter(({ h }) => /^(des|tb|dp)/i.test(h) && /\d/.test(h))
+    .filter(({ h, i }) => tbHeader(h) && i !== colPts)
     .sort((a, b) => a.i - b.i)
     .map(({ i }) => i);
+  // Com legenda, cada desempate vai para a coluna certa em vez de pela posição.
+  if (legend?.size) {
+    const bh = legendCol(/buchholz(?!.*cut)/i);
+    const bh1 = legendCol(/buchholz.*cut\s*1/i);
+    const sb = legendCol(/sonneborn/i);
+    if (bh >= 0 || bh1 >= 0 || sb >= 0) tbCols = [bh, bh1, sb].map((i) => (i >= 0 ? i : -1));
+  }
 
   if (colPts === -1) throw new Error('Coluna de pontos não encontrada no cabeçalho.');
 
@@ -82,9 +117,9 @@ function parseExcel(buffer: ArrayBuffer): ParsedExcel {
       initialRanking: colNr >= 0 ? Number(row[colNr]) || 0 : Number(row[1]) || 0,
       name: String(row[colName >= 0 ? colName : 3] ?? '').trim(),
       points: Number(row[colPts]) || 0,
-      buchholz: tbCols[0] !== undefined ? Number(row[tbCols[0]]) || 0 : 0,
-      buchholzCut1: tbCols[1] !== undefined ? Number(row[tbCols[1]]) || 0 : 0,
-      sonnebornBerger: tbCols[2] !== undefined ? Number(row[tbCols[2]]) || 0 : 0,
+      buchholz: tbCols[0] !== undefined && tbCols[0] >= 0 ? Number(row[tbCols[0]]) || 0 : 0,
+      buchholzCut1: tbCols[1] !== undefined && tbCols[1] >= 0 ? Number(row[tbCols[1]]) || 0 : 0,
+      sonnebornBerger: tbCols[2] !== undefined && tbCols[2] >= 0 ? Number(row[tbCols[2]]) || 0 : 0,
     });
   }
 
@@ -152,8 +187,10 @@ export async function importStandings(
   tournamentId: string,
   fileBuffer: ArrayBuffer,
   pairingGroupId: string | null = null,
+  /** Legenda de desempates da página HTML (parseTiebreakLegend), quando disponível. */
+  legend?: Map<number, string>,
 ): Promise<ImportStandingsResult> {
-  const { rows, completedRound } = parseExcel(fileBuffer);
+  const { rows, completedRound } = parseExcel(fileBuffer, legend);
   if (rows.length === 0) return { matched: 0, unmatched: 0 };
 
   // Scope player lookup to the group. Nome é a chave primária (mesmo padrão

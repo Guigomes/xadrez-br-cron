@@ -11,7 +11,7 @@ import {
 } from './chess-results.js';
 import { importPlayers } from './import-players.js';
 import { importPairings } from './import-pairings.js';
-import { importStandings } from './import-standings.js';
+import { importStandings, parseTiebreakLegend } from './import-standings.js';
 import { importPgns } from './import-pgns.js';
 import { notifyRoundPublished } from './notify.js';
 import {
@@ -393,7 +393,7 @@ export async function processImport(
   // chess-results is the authoritative source for points, rank and tiebreakers.
   // No local recalculation — it diverges from chess-results and is not needed.
   const standingsBuf = await fetchExcelDirect(standingsPageUrl);
-  const standingsResult = await importStandings(supabase, row.tournament_id, standingsBuf, pairingGroupId);
+  const standingsResult = await importStandings(supabase, row.tournament_id, standingsBuf, pairingGroupId, parseTiebreakLegend(standingsHtml));
 
   // 4b. PGN dos torneios que publicam os lances (só com o grupo encerrado)
   const pgnNote = await maybeImportPgns(supabase, row, info, pairingGroupId, maxRound);
