@@ -25,6 +25,8 @@ interface ImportedParticipant {
   fideId?: string;
   federation?: string;
   ratingStd?: number;
+  /** Rating FIDE da coluna "EloI" (rating internacional no ritmo do torneio). Vai para tournament_players.fide_rating. */
+  ratingFide?: number;
   initialRanking?: number;
   category?: string;
   state?: string;
@@ -83,6 +85,8 @@ export function parseRows(rows: unknown[][]): ImportedParticipant[] {
   const fideIdx = colIndex(headers, ['id fide']);
   const fedIdx = colIndex(headers, ['fed']);
   const eloIdx = colIndex(headers, ['elo', 'elon', 'elof', 'rtg', 'rating']);
+  // "EloI" = rating internacional (FIDE). Planilha com EloI e EloN: o eloIdx acima pega o nacional.
+  const fideEloIdx = colIndex(headers, ['eloi', 'rtgi', 'rtg int', 'rtg int.']);
   const typeIdx = colIndex(headers, ['tipo']);
   const stateIdx = colIndex(headers, ['gr', 'uf', 'estado', 'state']);
   const clubIdx = colIndex(headers, ['clube/cidade', 'clube / cidade', 'clube cidade']);
@@ -107,6 +111,7 @@ export function parseRows(rows: unknown[][]): ImportedParticipant[] {
     if (normalize(fullName).includes('chess-results')) continue;
 
     const ratingStd = parseInt(eloIdx >= 0 ? row[eloIdx] : '', 10);
+    const ratingFide = parseInt(fideEloIdx >= 0 ? row[fideEloIdx] : '', 10);
     const initialRanking = parseInt(numIdx >= 0 ? row[numIdx] : '', 10);
 
     const rawState = stateIdx >= 0 ? row[stateIdx].toUpperCase() : '';
@@ -118,6 +123,7 @@ export function parseRows(rows: unknown[][]): ImportedParticipant[] {
       fideId: fideIdx >= 0 ? row[fideIdx] || undefined : undefined,
       federation: fedIdx >= 0 ? row[fedIdx] || undefined : undefined,
       ratingStd: Number.isFinite(ratingStd) && ratingStd > 0 ? ratingStd : undefined,
+      ratingFide: Number.isFinite(ratingFide) && ratingFide > 0 ? ratingFide : undefined,
       initialRanking: Number.isFinite(initialRanking) && initialRanking > 0 ? initialRanking : undefined,
       category: typeIdx >= 0 && row[typeIdx] ? canonicalCategoryName(row[typeIdx]) : undefined,
       state: BR_STATE_CODES.has(rawState) ? rawState : undefined,
@@ -579,8 +585,12 @@ export async function importPlayers(
           .update({
             pairing_group_id: pairingGroupId ?? null,
             initial_ranking: p.initialRanking ?? null,
-            category_id: categoryId ?? null,
+            // Fonte com "Tipo" vazio para este jogador (ex.: Rafael Insaraulde no
+            // U12 do Regional Centro-Oeste 2026 Escolar) não apaga a categoria
+            // que o organizador/admin já definiu aqui.
+            ...(importCategories && !p.category ? {} : { category_id: categoryId ?? null }),
             source_name: p.sourceName,
+            fide_rating: p.ratingFide ?? null,
           })
           .eq('tournament_id', tournamentId)
           .eq('player_id', playerId);
@@ -595,6 +605,7 @@ export async function importPlayers(
         category_id: categoryId,
         pairing_group_id: pairingGroupId ?? null,
         source_name: p.sourceName,
+        fide_rating: p.ratingFide ?? null,
       });
 
       existingPlayerIds.set(playerId, '');  // mark as known so duplicates in Excel are skipped

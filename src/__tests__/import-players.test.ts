@@ -21,6 +21,25 @@ describe('parseRows do Chess-Results', () => {
     assert.equal(p.clubOrSchool, 'Colégio Exemplo');
   });
 
+  it('separa rating FIDE (EloI) do nacional (EloN)', () => {
+    const rows = [
+      ['Nº.', '', 'Nome', 'ID', 'ID FIDE', 'EloI', 'EloN', 'Tipo'],
+      ['1', '', 'Felipe Araujo Rodrigues', '89261', '44793995', '1726', '1909', 'U17'],
+      ['2', '', 'Sem Fide', '89262', '', '', '1500', 'U17'],
+    ];
+    const [a, b] = parseRows(rows);
+    assert.equal(a.ratingStd, 1909);
+    assert.equal(a.ratingFide, 1726);
+    assert.equal(b.ratingStd, 1500);
+    assert.equal(b.ratingFide, undefined);
+  });
+
+  it('sem coluna EloI não há rating FIDE', () => {
+    const [p] = parseRows([['Nº.', 'Nome', 'ID', 'EloN'], ['1', 'Ana', '1', '1600']]);
+    assert.equal(p.ratingStd, 1600);
+    assert.equal(p.ratingFide, undefined);
+  });
+
   it('preserva a ordem da fonte e guarda o nome original como alias', () => {
     const rows = [
       ['Nº.', '', 'Nome', 'ID FIDE'],

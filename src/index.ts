@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { createSupabase } from './supabase.js';
 import { processImport } from './process-tournament.js';
 import { notifyTournamentSummary, notifyImportStatus, triggerTournamentAlerts } from './notify.js';
+import { IDLE_INTERVAL_MINUTES, importHasRounds, shouldSkipIdle, type GroupRef, type RoundRef } from './idle-schedule.js';
 
 interface ImportRow {
   id: string;
@@ -14,6 +15,7 @@ interface ImportRow {
   /** Estado da execução anterior — pra avisar o dev só quando muda. */
   last_status: string | null;
   last_message: string | null;
+  last_run_at: string | null;
   /** Pedido de sincronização imediata feito pelo botão do admin no site. */
   force_requested_at: string | null;
   tournaments: {
@@ -130,7 +132,7 @@ async function main() {
     // continuar gastando execução com ele. draft/published/registration/
     // registration_closed/ongoing continuam entrando: é justamente antes de
     // 'ongoing' que o organizador edita a lista de participantes.
-    const columns = 'id, tournament_id, base_url, pairing_group_name, import_source_categories, enabled, last_status, last_message, force_requested_at, tournaments!inner(status, start_date, end_date)';
+    const columns = 'id, tournament_id, base_url, pairing_group_name, import_source_categories, enabled, last_status, last_message, last_run_at, force_requested_at, tournaments!inner(status, start_date, end_date)';
     const [scheduled, forced] = await Promise.all([
       supabase
         .from('tournament_imports')
@@ -155,9 +157,36 @@ async function main() {
     for (const row of [...((scheduled.data ?? []) as unknown as ImportRow[]), ...((forced.data ?? []) as unknown as ImportRow[])]) {
       byId.set(row.id, row);
     }
-    const rows = sortImports([...byId.values()]);
+    const candidates = sortImports([...byId.values()]);
+
+    // Sem rodada no banco ainda: só a cada IDLE_INTERVAL_MINUTES (ver idle-schedule.ts).
+    const tournamentIds = [...new Set(candidates.map((row) => row.tournament_id))];
+    let rounds: RoundRef[] = [];
+    let groups: GroupRef[] = [];
+    let roundsKnown = true;
+    if (tournamentIds.length > 0) {
+      const [roundsRes, groupsRes] = await Promise.all([
+        supabase.from('rounds').select('tournament_id, pairing_group_id').in('tournament_id', tournamentIds),
+        supabase.from('pairing_groups').select('id, tournament_id, name').in('tournament_id', tournamentIds),
+      ]);
+      if (roundsRes.error || groupsRes.error) {
+        // Sem saber se tem rodada, roda tudo como antes.
+        console.error('Falha ao ler rodadas (sem espaçar os sem rodada):', (roundsRes.error ?? groupsRes.error)?.message);
+        roundsKnown = false;
+      } else {
+        rounds = (roundsRes.data ?? []) as RoundRef[];
+        groups = (groupsRes.data ?? []) as GroupRef[];
+      }
+    }
+    const now = Date.now();
+    const rows = candidates.filter((row) =>
+      !roundsKnown || !shouldSkipIdle(row, importHasRounds(row, rounds, groups), now),
+    );
+    const idleSkipped = candidates.length - rows.length;
+
     const forcedCount = rows.filter((row) => row.force_requested_at).length;
-    console.log(`Processando ${rows.length} importação(ões) (${forcedCount} pedida(s) pelo admin), concorrência ${IMPORT_CONCURRENCY}`);
+    console.log(`Processando ${rows.length} importação(ões) (${forcedCount} pedida(s) pelo admin), concorrência ${IMPORT_CONCURRENCY}` +
+      (idleSkipped > 0 ? ` · ${idleSkipped} sem rodada aguardando ${IDLE_INTERVAL_MINUTES} min` : ''));
 
     let okCount = 0;
     let errCount = 0;

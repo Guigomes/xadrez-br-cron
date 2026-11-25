@@ -145,6 +145,22 @@ export function extractMaxRound(html: string): number {
 }
 
 /**
+ * Números de rodada dos cabeçalhos "N. Ronda" / "Round N" de uma página de
+ * emparceiramentos, em ordem e sem repetição. Dois ou mais = a página traz
+ * todas as rodadas juntas (torneio todos-contra-todos); no suíço só aparece a
+ * rodada pedida.
+ */
+export function extractRoundHeaders(html: string): number[] {
+  const text = html.replace(/<[^>]*>/g, '\n');
+  const found = new Set<number>();
+  for (const m of text.matchAll(/(?:^|\n)\s*(\d+)\.\s*(?:Ronda|Rodada|Round)\b/gi)) {
+    const n = parseInt(m[1], 10);
+    if (!isNaN(n) && n > 0) found.add(n);
+  }
+  return [...found].sort((a, b) => a - b);
+}
+
+/**
  * Reads the round count from the standings heading — "Classificação final após
  * 6 rondas" / "Final Ranking after 6 Rounds" / "Endstand nach 6 Runden".
  *

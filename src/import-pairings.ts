@@ -51,7 +51,22 @@ function parseResult(raw: unknown): {
 }
 
 
-function parseExcel(buffer: ArrayBuffer): ParsedFile {
+function matchRoundHeader(cell: string): number | null {
+  const m =
+    cell.match(/^(\d+)\.\s*Ronda/i) ??
+    cell.match(/Ronda\s+(\d+)/i) ??
+    cell.match(/Round\s+(\d+)/i);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+/**
+ * @param onlyRound Torneio todos-contra-todos: o chess-results põe TODAS as
+ * rodadas numa planilha só ("1. Ronda", tabela, "2. Ronda", tabela...). Com
+ * onlyRound, lê só o bloco daquela rodada. Sem ele, lê a primeira rodada da
+ * planilha — e para no cabeçalho da seguinte (antes juntava as mesas de todas
+ * as rodadas numa só e o banco recusava por mesa repetida, pairings_unique_board).
+ */
+function parseExcel(buffer: ArrayBuffer, onlyRound?: number): ParsedFile {
   const workbook = XLSX.read(buffer, { type: 'array' });
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
   const raw = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: null });
@@ -61,18 +76,19 @@ function parseExcel(buffer: ArrayBuffer): ParsedFile {
   // enough — scan a generous range. Pairing data rows have numeric board ids
   // in col 0 so they won't false-match the textual patterns below.
   let roundNumber = 0;
-  for (let i = 0; i < Math.min(30, raw.length); i++) {
-    const cell = String((raw[i] as unknown[])?.[0] ?? '').trim();
-    const m =
-      cell.match(/^(\d+)\.\s*Ronda/i) ??
-      cell.match(/Ronda\s+(\d+)/i) ??
-      cell.match(/Round\s+(\d+)/i);
-    if (m) {
-      roundNumber = parseInt(m[1], 10);
+  let roundHeaderRow = -1;
+  const scanLimit = onlyRound ? raw.length : Math.min(30, raw.length);
+  for (let i = 0; i < scanLimit; i++) {
+    const n = matchRoundHeader(String((raw[i] as unknown[])?.[0] ?? '').trim());
+    if (n && (!onlyRound || n === onlyRound)) {
+      roundNumber = n;
+      roundHeaderRow = i;
       break;
     }
   }
-  if (!roundNumber) throw new Error('Número da rodada não encontrado.');
+  if (!roundNumber) {
+    throw new Error(onlyRound ? `Rodada ${onlyRound} não encontrada na planilha.` : 'Número da rodada não encontrado.');
+  }
 
   // Locate the column header row and capture the actual indexes — the layout
   // varies (8 columns: board, white name, gr, pts, result, pts, black name, gr;
@@ -83,7 +99,7 @@ function parseExcel(buffer: ArrayBuffer): ParsedFile {
   let blackNameIdx = -1;
   let whiteNoIdx = -1;
   let blackNoIdx = -1;
-  for (let i = 0; i < raw.length; i++) {
+  for (let i = Math.max(0, roundHeaderRow); i < raw.length; i++) {
     const row = raw[i] as unknown[];
     if (!row) continue;
     const cells = row.map((c) => String(c ?? '').trim());
@@ -115,6 +131,7 @@ function parseExcel(buffer: ArrayBuffer): ParsedFile {
   for (let i = dataStart; i < raw.length; i++) {
     const row = raw[i] as unknown[];
     if (!row || row[0] == null) continue;
+    if (matchRoundHeader(String(row[0]).trim())) break; // começou a rodada seguinte
     const board = Number(row[0]);
     if (isNaN(board) || board <= 0) continue;
 
@@ -197,8 +214,9 @@ export async function importPairings(
   tournamentId: string,
   fileBuffer: ArrayBuffer,
   pairingGroupId: string | null = null,
+  onlyRound?: number,
 ): Promise<ImportPairingsResult> {
-  const { roundNumber, pairings } = parseExcel(fileBuffer);
+  const { roundNumber, pairings } = parseExcel(fileBuffer, onlyRound);
   if (pairings.length === 0) {
     return { roundNumber, imported: 0, unmatched: 0, roundId: null, published: false };
   }

@@ -7,6 +7,7 @@ import {
   fetchHtml,
   extractMaxRound,
   extractRoundCountFromHeading,
+  extractRoundHeaders,
 } from './chess-results.js';
 import { importPlayers } from './import-players.js';
 import { importPairings } from './import-pairings.js';
@@ -282,11 +283,27 @@ export async function processImport(
   // links de rodada atrás de um botão e não sobra nenhum `rd=N` pra contar.
   // O cabeçalho da classificação ("... após 6 rondas") continua no mesmo HTML.
   // Sem isso o import terminava com "success" tendo gravado zero rodadas.
+  const roundLinksFound = maxRound > 0;
   if (maxRound === 0) {
     maxRound = Math.max(
       extractRoundCountFromHeading(standingsHtml),
       extractRoundCountFromHeading(pairingsIndexHtml),
     );
+  }
+
+  // Todos-contra-todos: o chess-results não tem links rd=N e a página de
+  // emparceiramentos (art=2) já traz TODAS as rodadas, uma tabela por "N. Ronda".
+  // Sem isto o import terminava com 0 rodadas (visto no Regional Centro-Oeste
+  // 2026 Escolar U6-U8-U10, tnr1547633). A planilha dessa página tem as mesmas
+  // rodadas: baixa uma vez e importa cada bloco.
+  // Só sem links rd=N: no suíço a mesma página também lista rodadas futuras que
+  // só têm "não emparceirado" pré-lançado (ausência avisada) — visto no U12 do
+  // mesmo torneio (tnr1547639) — e elas não podem virar rodada publicada.
+  let allRoundsBuf: ArrayBuffer | null = null;
+  const roundHeaders = roundLinksFound ? [] : extractRoundHeaders(pairingsIndexHtml);
+  if (roundHeaders.length >= 2) {
+    maxRound = Math.max(maxRound, roundHeaders[roundHeaders.length - 1]);
+    allRoundsBuf = await fetchExcelDirect(pairingsIndexUrl);
   }
 
   // NULL no banco significa "fonte ainda não inspecionada"; zero significa
@@ -340,9 +357,9 @@ export async function processImport(
       continue;
     }
     try {
-      const pairingsUrl = buildArtUrl(info, 2, rd);
-      const buf = await fetchExcelDirect(pairingsUrl);
-      const r = await importPairings(supabase, row.tournament_id, buf, pairingGroupId);
+      const r = allRoundsBuf
+        ? await importPairings(supabase, row.tournament_id, allRoundsBuf, pairingGroupId, rd)
+        : await importPairings(supabase, row.tournament_id, await fetchExcelDirect(buildArtUrl(info, 2, rd)), pairingGroupId);
       totalPairings += r.imported;
       totalPairingsUnmatched += r.unmatched;
       // A rota interna deduplica quatro eventos independentes. Ela precisa ser

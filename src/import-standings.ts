@@ -57,11 +57,25 @@ function parseExcel(buffer: ArrayBuffer): ParsedExcel {
   if (colPts === -1) throw new Error('Coluna de pontos não encontrada no cabeçalho.');
 
   const rows: StandingRow[] = [];
+  let lastRank = 0;
   for (let i = headerIdx + 1; i < raw.length; i++) {
     const row = raw[i] as unknown[];
-    if (!row || row[0] == null) continue;
-    const rank = Number(row[0]);
+    if (!row) continue;
+    // Empate: o chess-results só escreve a posição no primeiro da faixa e
+    // deixa a célula vazia nos demais ("1 | Assan", " | Moura"). Antes a
+    // linha vazia era pulada e o jogador sumia da classificação (visto no
+    // Regional Centro-Oeste 2026 Escolar U6-U8-U10: 3 de 5 importados).
+    // Herda a posição de cima quando a linha tem nome e pontos.
+    const rankCell = String(row[0] ?? '').trim();
+    let rank = Number(rankCell);
+    if (rankCell === '') {
+      const name = String(row[colName >= 0 ? colName : 3] ?? '').trim();
+      const pts = String(row[colPts] ?? '').trim();
+      if (!lastRank || !name || pts === '' || !Number.isFinite(Number(pts.replace('½', '.5')))) continue;
+      rank = lastRank;
+    }
     if (isNaN(rank) || rank <= 0) continue;
+    lastRank = rank;
 
     rows.push({
       rank,
