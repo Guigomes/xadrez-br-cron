@@ -62,6 +62,18 @@ function namesShareWords(a: string, b: string): boolean {
   return shared >= Math.min(2, A.length, B.size);
 }
 
+/**
+ * Escola/clube a gravar num cadastro que já existe. `undefined` = não mexe.
+ * Complemento feito à mão depois de " / " (ex.: "Colegio X / Chess And Kids",
+ * pedido do dono em 2026-11-25) não é desfeito pela planilha, que só traz "Colegio X".
+ * Se a própria fonte passar a usar " / ", vale a fonte.
+ */
+export function mergeClubOrSchool(stored: string | null | undefined, incoming: string | undefined): string | undefined {
+  if (!incoming) return undefined;
+  if (stored && stored.includes(' / ') && !incoming.includes(' / ')) return undefined;
+  return incoming;
+}
+
 export function parseRows(rows: unknown[][]): ImportedParticipant[] {
   const asStr = rows.map((row) => row.map((c) => String(c ?? '').trim()));
 
@@ -212,7 +224,7 @@ export async function importPlayers(
   //     grafia do nome entre uma execução e outra (ver byNameKey abaixo).
   let existingTPsQuery = supabase
     .from('tournament_players')
-    .select('id, player_id, source_name, initial_ranking, player:players(full_name, title, fide_id)')
+    .select('id, player_id, source_name, initial_ranking, player:players(full_name, title, fide_id, club_or_school)')
     .eq('tournament_id', tournamentId);
   if (pairingGroupId) {
     existingTPsQuery = existingTPsQuery.eq('pairing_group_id', pairingGroupId);
@@ -256,13 +268,15 @@ export async function importPlayers(
   const storedNameByPlayerId = new Map<string, string>();
   const storedTitleByPlayerId = new Map<string, string | null>();
   const storedFideByPlayerId = new Map<string, string | null>();
+  const storedClubByPlayerId = new Map<string, string | null>();
   for (const tp of existingTPs ?? []) {
     const playerIdX = tp.player_id as string;
-    const playerRow = (tp.player as unknown) as { full_name?: string; title?: string | null; fide_id?: string | null } | null;
+    const playerRow = (tp.player as unknown) as { full_name?: string; title?: string | null; fide_id?: string | null; club_or_school?: string | null } | null;
     const fullName = playerRow?.full_name ?? '';
     storedNameByPlayerId.set(playerIdX, fullName);
     storedTitleByPlayerId.set(playerIdX, playerRow?.title ?? null);
     storedFideByPlayerId.set(playerIdX, playerRow?.fide_id ?? null);
+    storedClubByPlayerId.set(playerIdX, playerRow?.club_or_school ?? null);
     for (const name of [fullName, tp.source_name as string | null]) {
       const key = normalizeNameKey(name ?? '');
       if (key && !byNameKey.has(key)) byNameKey.set(key, playerIdX);
@@ -353,7 +367,7 @@ export async function importPlayers(
       if (cbxId) {
         const { data: match } = await supabase
           .from('players')
-          .select('id, full_name, fide_id')
+          .select('id, full_name, fide_id, club_or_school')
           .eq('cbx_id', cbxId)
           .limit(1)
           .maybeSingle();
@@ -379,7 +393,7 @@ export async function importPlayers(
               .update({
                 ...(setFide ? { fide_id: setFide } : {}),
                 state: p.state,
-                club_or_school: p.clubOrSchool,
+                club_or_school: mergeClubOrSchool(match.club_or_school as string | null, p.clubOrSchool),
                 rating_std: p.ratingStd,
                 federation: p.federation,
                 ...(p.fideName ? { fide_name: p.fideName } : {}),
@@ -393,7 +407,7 @@ export async function importPlayers(
       if (!playerId && fideId) {
         const { data: match } = await supabase
           .from('players')
-          .select('id, full_name, cbx_id')
+          .select('id, full_name, cbx_id, club_or_school')
           .eq('fide_id', fideId)
           .limit(1)
           .maybeSingle();
@@ -412,7 +426,7 @@ export async function importPlayers(
               .update({
                 ...(shouldUpdateName ? { full_name: p.fullName } : {}),
                 state: p.state,
-                club_or_school: p.clubOrSchool,
+                club_or_school: mergeClubOrSchool(match.club_or_school as string | null, p.clubOrSchool),
                 rating_std: p.ratingStd,
                 federation: p.federation,
                 ...(p.fideName ? { fide_name: p.fideName } : {}),
@@ -446,7 +460,7 @@ export async function importPlayers(
           if (stored !== p.fullName || (p.title && p.title !== storedTitle) || p.state || p.clubOrSchool || p.ratingStd || p.federation) {
             await supabase
               .from('players')
-              .update({ full_name: p.fullName, title: p.title, state: p.state, club_or_school: p.clubOrSchool, rating_std: p.ratingStd, federation: p.federation, ...(p.fideName ? { fide_name: p.fideName } : {}) })
+              .update({ full_name: p.fullName, title: p.title, state: p.state, club_or_school: mergeClubOrSchool(storedClubByPlayerId.get(candidate), p.clubOrSchool), rating_std: p.ratingStd, federation: p.federation, ...(p.fideName ? { fide_name: p.fideName } : {}) })
               .eq('id', playerId);
           }
         } else if (candidate) {
@@ -457,7 +471,7 @@ export async function importPlayers(
       if (!playerId) {
         const { data: matches } = await supabase
           .from('players')
-          .select('id, full_name, cbx_id, fide_id')
+          .select('id, full_name, cbx_id, fide_id, club_or_school')
           .ilike('full_name', p.fullName)
           .limit(10);
         let exact = matches?.find((m) => normalize(m.full_name as string) === normalize(p.fullName));
@@ -508,7 +522,7 @@ export async function importPlayers(
                 ...(fideId && !exact.fide_id ? { fide_id: fideId } : {}),
                 ...(cbxId && !exact.cbx_id ? { cbx_id: cbxId } : {}),
                 state: p.state,
-                club_or_school: p.clubOrSchool,
+                club_or_school: mergeClubOrSchool(exact.club_or_school as string | null, p.clubOrSchool),
                 rating_std: p.ratingStd,
                 federation: p.federation,
                 ...(p.fideName ? { fide_name: p.fideName } : {}),

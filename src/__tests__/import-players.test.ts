@@ -3,7 +3,7 @@
 // vêm junto. Rodar: npm test (node:test via tsx, sem dependência extra).
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseRows } from '../import-players.js';
+import { mergeClubOrSchool, parseRows } from '../import-players.js';
 import { participantIdentityKey } from '../normalize.js';
 
 describe('parseRows do Chess-Results', () => {
@@ -94,5 +94,20 @@ describe('lista de jogadores vazia na fonte', () => {
       ['1', 'Maria Silva', '123456', '1800'],
     ];
     assert.throws(() => parseRows(rows), /coluna "Nome" ausente/);
+  });
+});
+
+describe('mergeClubOrSchool', () => {
+  it('mantém o complemento feito à mão depois de " / "', () => {
+    assert.equal(mergeClubOrSchool('Colegio X / Chess And Kids', 'Colegio X'), undefined);
+    assert.equal(mergeClubOrSchool('E.M. Aviador / Chess And Kids', 'Campo Grande'), undefined);
+  });
+  it('sem complemento, vale a planilha; vazio não mexe', () => {
+    assert.equal(mergeClubOrSchool('Colegio X', 'Colegio Y'), 'Colegio Y');
+    assert.equal(mergeClubOrSchool(null, 'Colegio Y'), 'Colegio Y');
+    assert.equal(mergeClubOrSchool('Colegio X / Chess And Kids', undefined), undefined);
+  });
+  it('fonte que também usa " / " prevalece', () => {
+    assert.equal(mergeClubOrSchool('A / B', 'C / D'), 'C / D');
   });
 });
