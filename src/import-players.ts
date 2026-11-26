@@ -630,6 +630,7 @@ export async function importPlayers(
             ...(importCategories && !p.category ? {} : { category_id: categoryId ?? null }),
             source_name: p.sourceName,
             fide_rating: p.ratingFide ?? null,
+            national_rating: p.ratingStd ?? null,
           })
           .eq('tournament_id', tournamentId)
           .eq('player_id', playerId);
@@ -645,6 +646,8 @@ export async function importPlayers(
         pairing_group_id: pairingGroupId ?? null,
         source_name: p.sourceName,
         fide_rating: p.ratingFide ?? null,
+        // Rating nacional da fonte NESTE torneio (o do cadastro é o mais recente de todos).
+        national_rating: p.ratingStd ?? null,
       });
 
       existingPlayerIds.set(playerId, '');  // mark as known so duplicates in Excel are skipped
