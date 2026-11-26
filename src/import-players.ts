@@ -63,6 +63,23 @@ function namesShareWords(a: string, b: string): boolean {
 }
 
 /**
+ * Rating da fonte a gravar no cadastro global. `players.rating_std` é um só por
+ * jogador: sincronizar um torneio antigo depois de um recente punha de volta o
+ * rating antigo (Etapas 1–3 do Festival da Criança sobre a Grande Final, 2026-11-25).
+ * Só grava quando o torneio é da mesma data ou mais novo que o do rating atual.
+ */
+export function ratingUpdate(
+  storedAsOf: string | null | undefined,
+  tournamentDate: string | null | undefined,
+  incoming: number | undefined,
+): { rating_std?: number; rating_std_as_of?: string } {
+  if (incoming === undefined) return {};
+  if (!tournamentDate) return { rating_std: incoming };
+  if (storedAsOf && storedAsOf > tournamentDate) return {};
+  return { rating_std: incoming, rating_std_as_of: tournamentDate };
+}
+
+/**
  * Escola/clube a gravar num cadastro que já existe. `undefined` = não mexe.
  * Complemento feito à mão depois de " / " (ex.: "Colegio X / Chess And Kids",
  * pedido do dono em 2026-11-25) não é desfeito pela planilha, que só traz "Colegio X".
@@ -204,6 +221,9 @@ export async function importPlayers(
   /** false: ignora a coluna "Tipo" da fonte — sem criar nem atribuir categoria. */
   importCategories = true,
 ): Promise<ImportPlayersResult> {
+  // Data do torneio: decide se o rating da planilha é mais novo que o do cadastro (ratingUpdate).
+  const { data: tournamentRow } = await supabase.from('tournaments').select('start_date').eq('id', tournamentId).maybeSingle();
+  const tournamentDate = (tournamentRow?.start_date as string | null | undefined) ?? null;
   const workbook = XLSX.read(fileBuffer, { type: 'array' });
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
   const rawRows = XLSX.utils.sheet_to_json(sheet, {
@@ -224,7 +244,7 @@ export async function importPlayers(
   //     grafia do nome entre uma execução e outra (ver byNameKey abaixo).
   let existingTPsQuery = supabase
     .from('tournament_players')
-    .select('id, player_id, source_name, initial_ranking, player:players(full_name, title, fide_id, club_or_school)')
+    .select('id, player_id, source_name, initial_ranking, player:players(full_name, title, fide_id, club_or_school, rating_std_as_of)')
     .eq('tournament_id', tournamentId);
   if (pairingGroupId) {
     existingTPsQuery = existingTPsQuery.eq('pairing_group_id', pairingGroupId);
@@ -269,14 +289,16 @@ export async function importPlayers(
   const storedTitleByPlayerId = new Map<string, string | null>();
   const storedFideByPlayerId = new Map<string, string | null>();
   const storedClubByPlayerId = new Map<string, string | null>();
+  const storedRatingAsOfByPlayerId = new Map<string, string | null>();
   for (const tp of existingTPs ?? []) {
     const playerIdX = tp.player_id as string;
-    const playerRow = (tp.player as unknown) as { full_name?: string; title?: string | null; fide_id?: string | null; club_or_school?: string | null } | null;
+    const playerRow = (tp.player as unknown) as { full_name?: string; title?: string | null; fide_id?: string | null; club_or_school?: string | null; rating_std_as_of?: string | null } | null;
     const fullName = playerRow?.full_name ?? '';
     storedNameByPlayerId.set(playerIdX, fullName);
     storedTitleByPlayerId.set(playerIdX, playerRow?.title ?? null);
     storedFideByPlayerId.set(playerIdX, playerRow?.fide_id ?? null);
     storedClubByPlayerId.set(playerIdX, playerRow?.club_or_school ?? null);
+    storedRatingAsOfByPlayerId.set(playerIdX, playerRow?.rating_std_as_of ?? null);
     for (const name of [fullName, tp.source_name as string | null]) {
       const key = normalizeNameKey(name ?? '');
       if (key && !byNameKey.has(key)) byNameKey.set(key, playerIdX);
@@ -367,7 +389,7 @@ export async function importPlayers(
       if (cbxId) {
         const { data: match } = await supabase
           .from('players')
-          .select('id, full_name, fide_id, club_or_school')
+          .select('id, full_name, fide_id, club_or_school, rating_std_as_of')
           .eq('cbx_id', cbxId)
           .limit(1)
           .maybeSingle();
@@ -394,7 +416,7 @@ export async function importPlayers(
                 ...(setFide ? { fide_id: setFide } : {}),
                 state: p.state,
                 club_or_school: mergeClubOrSchool(match.club_or_school as string | null, p.clubOrSchool),
-                rating_std: p.ratingStd,
+                ...ratingUpdate(match.rating_std_as_of as string | null, tournamentDate, p.ratingStd),
                 federation: p.federation,
                 ...(p.fideName ? { fide_name: p.fideName } : {}),
                 title: p.title,
@@ -407,7 +429,7 @@ export async function importPlayers(
       if (!playerId && fideId) {
         const { data: match } = await supabase
           .from('players')
-          .select('id, full_name, cbx_id, club_or_school')
+          .select('id, full_name, cbx_id, club_or_school, rating_std_as_of')
           .eq('fide_id', fideId)
           .limit(1)
           .maybeSingle();
@@ -427,7 +449,7 @@ export async function importPlayers(
                 ...(shouldUpdateName ? { full_name: p.fullName } : {}),
                 state: p.state,
                 club_or_school: mergeClubOrSchool(match.club_or_school as string | null, p.clubOrSchool),
-                rating_std: p.ratingStd,
+                ...ratingUpdate(match.rating_std_as_of as string | null, tournamentDate, p.ratingStd),
                 federation: p.federation,
                 ...(p.fideName ? { fide_name: p.fideName } : {}),
                 title: p.title,
@@ -460,7 +482,7 @@ export async function importPlayers(
           if (stored !== p.fullName || (p.title && p.title !== storedTitle) || p.state || p.clubOrSchool || p.ratingStd || p.federation) {
             await supabase
               .from('players')
-              .update({ full_name: p.fullName, title: p.title, state: p.state, club_or_school: mergeClubOrSchool(storedClubByPlayerId.get(candidate), p.clubOrSchool), rating_std: p.ratingStd, federation: p.federation, ...(p.fideName ? { fide_name: p.fideName } : {}) })
+              .update({ full_name: p.fullName, title: p.title, state: p.state, club_or_school: mergeClubOrSchool(storedClubByPlayerId.get(candidate), p.clubOrSchool), ...ratingUpdate(storedRatingAsOfByPlayerId.get(candidate), tournamentDate, p.ratingStd), federation: p.federation, ...(p.fideName ? { fide_name: p.fideName } : {}) })
               .eq('id', playerId);
           }
         } else if (candidate) {
@@ -471,7 +493,7 @@ export async function importPlayers(
       if (!playerId) {
         const { data: matches } = await supabase
           .from('players')
-          .select('id, full_name, cbx_id, fide_id, club_or_school')
+          .select('id, full_name, cbx_id, fide_id, club_or_school, rating_std_as_of')
           .ilike('full_name', p.fullName)
           .limit(10);
         let exact = matches?.find((m) => normalize(m.full_name as string) === normalize(p.fullName));
@@ -523,7 +545,7 @@ export async function importPlayers(
                 ...(cbxId && !exact.cbx_id ? { cbx_id: cbxId } : {}),
                 state: p.state,
                 club_or_school: mergeClubOrSchool(exact.club_or_school as string | null, p.clubOrSchool),
-                rating_std: p.ratingStd,
+                ...ratingUpdate(exact.rating_std_as_of as string | null, tournamentDate, p.ratingStd),
                 federation: p.federation,
                 ...(p.fideName ? { fide_name: p.fideName } : {}),
                 title: p.title,
@@ -544,6 +566,7 @@ export async function importPlayers(
             federation: p.federation ?? 'BRA',
             fide_name: p.fideName,
             rating_std: p.ratingStd,
+            ...(p.ratingStd !== undefined && tournamentDate ? { rating_std_as_of: tournamentDate } : {}),
             state: p.state,
             club_or_school: p.clubOrSchool,
           })

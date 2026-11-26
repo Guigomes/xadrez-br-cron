@@ -3,7 +3,7 @@
 // vêm junto. Rodar: npm test (node:test via tsx, sem dependência extra).
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mergeClubOrSchool, parseRows } from '../import-players.js';
+import { mergeClubOrSchool, parseRows, ratingUpdate } from '../import-players.js';
 import { participantIdentityKey } from '../normalize.js';
 
 describe('parseRows do Chess-Results', () => {
@@ -109,5 +109,20 @@ describe('mergeClubOrSchool', () => {
   });
   it('fonte que também usa " / " prevalece', () => {
     assert.equal(mergeClubOrSchool('A / B', 'C / D'), 'C / D');
+  });
+});
+
+describe('ratingUpdate', () => {
+  it('torneio mais antigo não sobrescreve rating mais novo', () => {
+    assert.deepEqual(ratingUpdate('2026-11-28', '2026-07-04', 2033), {});
+  });
+  it('mesmo dia ou mais novo grava rating e data', () => {
+    assert.deepEqual(ratingUpdate('2026-07-04', '2026-11-28', 2095), { rating_std: 2095, rating_std_as_of: '2026-11-28' });
+    assert.deepEqual(ratingUpdate('2026-11-28', '2026-11-28', 2095), { rating_std: 2095, rating_std_as_of: '2026-11-28' });
+    assert.deepEqual(ratingUpdate(null, '2026-04-11', 1800), { rating_std: 1800, rating_std_as_of: '2026-04-11' });
+  });
+  it('sem rating na planilha não mexe; sem data do torneio grava como antes', () => {
+    assert.deepEqual(ratingUpdate(null, '2026-04-11', undefined), {});
+    assert.deepEqual(ratingUpdate('2026-11-28', null, 1700), { rating_std: 1700 });
   });
 });
