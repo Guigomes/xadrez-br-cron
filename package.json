@@ -9,7 +9,8 @@
     "start": "node dist/index.js",
     "dev": "node --env-file=.env --import tsx src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test src/__tests__/*.test.ts"
+    "test": "node --import tsx --test src/__tests__/*.test.ts",
+    "prepare": "node -e \"if(require('fs').existsSync('src/lib.ts'))require('child_process').execSync('tsc',{stdio:'inherit'})\""
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.47.10",
@@ -24,5 +25,14 @@
     "pg": "^8.20.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
-  }
+  },
+  "exports": {
+    "./lib": {
+      "types": "./dist/lib.d.ts",
+      "default": "./dist/lib.js"
+    }
+  },
+  "files": [
+    "dist"
+  ]
 }

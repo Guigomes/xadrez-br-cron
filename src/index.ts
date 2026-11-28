@@ -1,7 +1,7 @@
-import type { SupabaseClient } from '@supabase/supabase-js';
 import { createSupabase } from './supabase.js';
-import { processImport } from './process-tournament.js';
-import { notifyTournamentSummary, notifyImportStatus, triggerTournamentAlerts } from './notify.js';
+import { notifyTournamentSummary, triggerTournamentAlerts } from './notify.js';
+import { acquireLock, releaseLock, refreshLock } from './lock.js';
+import { runImportRow } from './run-import.js';
 import { IDLE_INTERVAL_MINUTES, importHasRounds, shouldSkipIdle, type GroupRef, type RoundRef } from './idle-schedule.js';
 
 interface ImportRow {
@@ -25,48 +25,11 @@ interface ImportRow {
   };
 }
 
-// O Scheduler dispara a cada 1-2 minutos, mas uma execução real pode levar
-// vários minutos — sem trava, várias execuções rodavam ao mesmo tempo escrevendo na
-// mesma tournament_players (migration 072). Trava expira sozinha depois desse
-// tanto de minutos caso o processo anterior tenha morrido sem liberar.
-const LOCK_STALE_MINUTES = 10;
 const LOCK_HEARTBEAT_MS = 60_000;
 const IMPORT_CONCURRENCY = Math.max(
   1,
   Math.min(4, Number.parseInt(process.env.IMPORT_CONCURRENCY ?? '3', 10) || 3),
 );
-
-/** true = trava conseguida, esta execução pode prosseguir. */
-async function acquireLock(supabase: SupabaseClient): Promise<boolean> {
-  const staleThreshold = new Date(Date.now() - LOCK_STALE_MINUTES * 60_000).toISOString();
-  const { data, error } = await supabase
-    .from('cron_import_lock')
-    .update({ locked_at: new Date().toISOString() })
-    .eq('id', 1)
-    .or(`locked_at.is.null,locked_at.lt.${staleThreshold}`)
-    .select('id');
-  if (error) {
-    console.error('Falha ao tentar travar (seguindo sem trava):', error.message);
-    return true; // não bloqueia a importação por causa de erro na trava em si
-  }
-  return (data?.length ?? 0) > 0;
-}
-
-async function releaseLock(supabase: SupabaseClient): Promise<void> {
-  await supabase.from('cron_import_lock').update({ locked_at: null }).eq('id', 1);
-}
-
-async function refreshLock(supabase: SupabaseClient): Promise<void> {
-  try {
-    const { error } = await supabase
-      .from('cron_import_lock')
-      .update({ locked_at: new Date().toISOString() })
-      .eq('id', 1);
-    if (error) console.error('Falha ao renovar trava:', error.message);
-  } catch (error) {
-    console.error('Falha ao renovar trava:', error instanceof Error ? error.message : error);
-  }
-}
 
 function sortImports(rows: ImportRow[]): ImportRow[] {
   const statusPriority = (status: string) => status === 'ongoing' ? 0 : 1;
@@ -113,6 +76,15 @@ async function runWithConcurrency<T>(
   }));
 }
 
+// Conta requisições ao chess-results por ciclo (log no fim), para acompanhar o volume.
+let chessResultsRequests = 0;
+const originalFetch = globalThis.fetch;
+globalThis.fetch = ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+  const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+  if (/chess-results\.com/i.test(url)) chessResultsRequests++;
+  return originalFetch(input, init);
+}) as typeof fetch;
+
 async function main() {
   const supabase = createSupabase();
 
@@ -157,7 +129,11 @@ async function main() {
     for (const row of [...((scheduled.data ?? []) as unknown as ImportRow[]), ...((forced.data ?? []) as unknown as ImportRow[])]) {
       byId.set(row.id, row);
     }
-    const candidates = sortImports([...byId.values()]);
+    // ONLY_TOURNAMENT_IDS (lista separada por vírgula): roda só esses torneios.
+    // Uso: loop local dedicado a um evento ao vivo, sem gastar ciclo com os demais.
+    const onlyIds = (process.env.ONLY_TOURNAMENT_IDS ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+    const candidates = sortImports([...byId.values()].filter((row) => !onlyIds.length || onlyIds.includes(row.tournament_id)));
+    if (onlyIds.length) console.log(`Filtro ONLY_TOURNAMENT_IDS: ${onlyIds.join(', ')}`);
 
     // Sem rodada no banco ainda: só a cada IDLE_INTERVAL_MINUTES (ver idle-schedule.ts).
     const tournamentIds = [...new Set(candidates.map((row) => row.tournament_id))];
@@ -196,35 +172,13 @@ async function main() {
       console.log(`${label} iniciando...`);
       const startedAt = new Date().toISOString();
       try {
-        const summary = await processImport(supabase, row);
-        await supabase
-          .from('tournament_imports')
-          .update({
-            last_run_at: startedAt,
-            last_status: 'success',
-            last_message: summary.slice(0, 500),
-          })
-          .eq('id', row.id);
-        console.log(`${label} ok — ${summary}`);
-        okCount++;
-        if (row.last_status === 'error') {
-          await notifyImportStatus({ tournamentId: row.tournament_id, groupName: row.pairing_group_name, status: 'recovered' });
-        }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        await supabase
-          .from('tournament_imports')
-          .update({
-            last_run_at: startedAt,
-            last_status: 'error',
-            last_message: message.slice(0, 500),
-          })
-          .eq('id', row.id);
-        console.error(`${label} ERRO — ${message}`);
-        errCount++;
-        // Avisa o dev quando quebra, ou quando o motivo do erro muda — não a cada 2 minutos.
-        if (row.last_status !== 'error' || (row.last_message ?? '') !== message.slice(0, 500)) {
-          await notifyImportStatus({ tournamentId: row.tournament_id, groupName: row.pairing_group_name, status: 'error', message });
+        const result = await runImportRow(supabase, row);
+        if (result.ok) {
+          console.log(`${label} ok — ${result.summary}`);
+          okCount++;
+        } else {
+          console.error(`${label} ERRO — ${result.error}`);
+          errCount++;
         }
       } finally {
         // Atende o pedido do admin — só os feitos ANTES desta execução começar:
@@ -246,7 +200,7 @@ async function main() {
       await notifyTournamentSummary(tournamentId);
     }
 
-    console.log(`Concluído. ${okCount} ok, ${errCount} com erro.`);
+    console.log(`Concluído. ${okCount} ok, ${errCount} com erro. Requisições ao chess-results: ${chessResultsRequests}.`);
 
     // Alertas de torneio do app: a rota decide se já é hora (uma vez por dia).
     await triggerTournamentAlerts();
